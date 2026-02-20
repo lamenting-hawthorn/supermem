@@ -123,7 +123,9 @@ CLIENT_SUCCESS_PROMPTS = {
 
 def print_banner() -> None:
     title = Text("Mem-Agent Interactive CLI", style="bold white")
-    subtitle = Text("Explore synthetic memories and guided workflows", style="italic dim")
+    subtitle = Text(
+        "Explore synthetic memories and guided workflows", style="italic dim"
+    )
     content = Text.assemble(title, "\n", subtitle)
     console.print(Panel.fit(content, border_style="green", padding=(1, 3)))
 
@@ -193,7 +195,14 @@ def discover_use_cases() -> List[UseCase]:
                 description = meta.get("description", description)
             except Exception:
                 pass
-        cases.append(UseCase(slug=directory.name, path=directory, title=title, description=description))
+        cases.append(
+            UseCase(
+                slug=directory.name,
+                path=directory,
+                title=title,
+                description=description,
+            )
+        )
     return cases
 
 
@@ -204,14 +213,18 @@ def write_memory_path(path: Path) -> None:
 def choose_use_case(preferred_slug: Optional[str] = None) -> UseCase:
     cases = discover_use_cases()
     if not cases:
-        raise SystemExit("No memories found. Add folders under ./memories/ before running the CLI.")
+        raise SystemExit(
+            "No memories found. Add folders under ./memories/ before running the CLI."
+        )
 
     if preferred_slug:
         for case in cases:
             if case.slug == preferred_slug:
                 write_memory_path(case.path)
                 return case
-        raise SystemExit(f"Use case '{preferred_slug}' not found. Available: {[c.slug for c in cases]}")
+        raise SystemExit(
+            f"Use case '{preferred_slug}' not found. Available: {[c.slug for c in cases]}"
+        )
 
     print_section("Available Use Cases")
     for idx, case in enumerate(cases, start=1):
@@ -224,7 +237,9 @@ def choose_use_case(preferred_slug: Optional[str] = None) -> UseCase:
         if selection.isdigit() and 1 <= int(selection) <= len(cases):
             chosen = cases[int(selection) - 1]
             write_memory_path(chosen.path)
-            console.print(f"\n[green]Using memory directory:[/green] {chosen.path.resolve()}")
+            console.print(
+                f"\n[green]Using memory directory:[/green] {chosen.path.resolve()}"
+            )
             return chosen
         console.print("[red]Please enter a valid number.[/red]")
 
@@ -311,13 +326,23 @@ def gather_clinical_note() -> Dict:
 
     note = {}
     note["date"] = input_with_default("Encounter date", SAMPLE_CLINICAL_NOTE["date"])
-    note["chief_complaint"] = input_with_default("Chief complaint", SAMPLE_CLINICAL_NOTE["chief_complaint"])
-    note["subjective"] = input_with_default("Subjective", SAMPLE_CLINICAL_NOTE["subjective"])
+    note["chief_complaint"] = input_with_default(
+        "Chief complaint", SAMPLE_CLINICAL_NOTE["chief_complaint"]
+    )
+    note["subjective"] = input_with_default(
+        "Subjective", SAMPLE_CLINICAL_NOTE["subjective"]
+    )
     note["vitals"] = input_with_default("Vitals", SAMPLE_CLINICAL_NOTE["vitals"])
-    note["physical_exam"] = input_with_default("Physical exam", SAMPLE_CLINICAL_NOTE["physical_exam"])
-    note["assessment"] = input_with_default("Assessment", SAMPLE_CLINICAL_NOTE["assessment"])
+    note["physical_exam"] = input_with_default(
+        "Physical exam", SAMPLE_CLINICAL_NOTE["physical_exam"]
+    )
+    note["assessment"] = input_with_default(
+        "Assessment", SAMPLE_CLINICAL_NOTE["assessment"]
+    )
     note["plan"] = input_with_default("Plan", SAMPLE_CLINICAL_NOTE["plan"])
-    note["next_visit"] = input_with_default("Next visit plan", SAMPLE_CLINICAL_NOTE["next_visit"])
+    note["next_visit"] = input_with_default(
+        "Next visit plan", SAMPLE_CLINICAL_NOTE["next_visit"]
+    )
     return note
 
 
@@ -366,6 +391,7 @@ def gather_wearable_data() -> Dict:
         data[key] = input_with_default(prompt, SAMPLE_WEARABLE_DATA.get(key, ""))
     return data
 
+
 # ---------------------------------------------------------------------------
 # Mem-agent client
 # ---------------------------------------------------------------------------
@@ -374,7 +400,9 @@ def gather_wearable_data() -> Dict:
 class MemAgentClient:
     """HTTP client for interacting with mem-agent workflows."""
 
-    def __init__(self, base_url: str = "http://localhost:8081", request_timeout: float = 240.0):
+    def __init__(
+        self, base_url: str = "http://localhost:8081", request_timeout: float = 240.0
+    ):
         self.base_url = base_url
         self.mcp_endpoint = f"{base_url}/mcp"
         self.request_timeout = request_timeout
@@ -410,7 +438,14 @@ class MemAgentClient:
         return "No textual content returned"
 
     def query_memory(self, question: str) -> str:
-        console.print(Panel(question.strip() or "(empty prompt)", title="Prompt", border_style="magenta", padding=(1, 2)))
+        console.print(
+            Panel(
+                question.strip() or "(empty prompt)",
+                title="Prompt",
+                border_style="magenta",
+                padding=(1, 2),
+            )
+        )
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -507,13 +542,16 @@ class MemAgentClient:
         """
         return self.query_memory(prompt)
 
+
 # ---------------------------------------------------------------------------
 # CLI actions
 # ---------------------------------------------------------------------------
 
 
 def action_connection_test(agent: MemAgentClient) -> None:
-    response = agent.query_memory("Are you connected and ready to help with patient memory?")
+    response = agent.query_memory(
+        "Are you connected and ready to help with patient memory?"
+    )
     display_response("Connection Check", response)
 
 
@@ -598,7 +636,9 @@ def action_add_data(agent: MemAgentClient) -> None:
 def action_guided_walkthrough(agent: MemAgentClient) -> None:
     patient = prompt_patient()
     print_section("Guided Scenario")
-    console.print("Running end-to-end workflow. This may take a minute...\n", style="dim")
+    console.print(
+        "Running end-to-end workflow. This may take a minute...\n", style="dim"
+    )
 
     display_response(
         "Connection Check",
@@ -633,6 +673,7 @@ def action_guided_walkthrough(agent: MemAgentClient) -> None:
         agent.query_memory(SAMPLE_COHORT_PROMPT),
     )
 
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -659,6 +700,7 @@ def run_cli(args: argparse.Namespace) -> None:
         actions.append((str(next_key), "Add patient data", action_add_data))
         next_key += 1
     elif chosen.slug == "client_success":
+
         def action_client_health(agent: MemAgentClient) -> None:
             display_response(
                 "Account Health",
@@ -693,7 +735,9 @@ def run_cli(args: argparse.Namespace) -> None:
 
     while True:
         print_menu(actions)
-        choice = console.input("[bold]Select an action (q to quit): [/bold]").strip().lower()
+        choice = (
+            console.input("[bold]Select an action (q to quit): [/bold]").strip().lower()
+        )
         if not choice:
             continue
         if choice == "0":
@@ -709,10 +753,21 @@ def run_cli(args: argparse.Namespace) -> None:
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Explore mem-agent healthcare memories via CLI")
-    parser.add_argument("--base-url", default="http://localhost:8081", help="Base URL for the MCP server")
-    parser.add_argument("--timeout", type=float, default=240.0, help="Request timeout in seconds")
-    parser.add_argument("--use-case", help="Slug of the memory pack to load (defaults to interactive prompt)")
+    parser = argparse.ArgumentParser(
+        description="Explore mem-agent healthcare memories via CLI"
+    )
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:8081",
+        help="Base URL for the MCP server",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=240.0, help="Request timeout in seconds"
+    )
+    parser.add_argument(
+        "--use-case",
+        help="Slug of the memory pack to load (defaults to interactive prompt)",
+    )
     return parser.parse_args(argv)
 
 

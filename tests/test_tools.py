@@ -4,6 +4,7 @@ Unit tests for agent/tools.py — the file operation API exposed to the agent.
 These tests run directly against the tool functions (not through the sandbox),
 exercising the actual file I/O logic with a temporary memory directory.
 """
+
 import os
 import pytest
 
@@ -26,6 +27,7 @@ from agent.tools import (
 # ---------------------------------------------------------------------------
 # create_file
 # ---------------------------------------------------------------------------
+
 
 class TestCreateFile:
     def test_creates_file_with_content(self, temp_memory_dir):
@@ -60,6 +62,7 @@ class TestCreateFile:
 # create_dir
 # ---------------------------------------------------------------------------
 
+
 class TestCreateDir:
     def test_creates_directory(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "topics")
@@ -84,6 +87,7 @@ class TestCreateDir:
 # read_file
 # ---------------------------------------------------------------------------
 
+
 class TestReadFile:
     def test_reads_existing_file(self, memory_with_files):
         path = os.path.join(memory_with_files, "user.md")
@@ -104,6 +108,7 @@ class TestReadFile:
 # update_file
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateFile:
     def test_replaces_content(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")
@@ -121,9 +126,7 @@ class TestUpdateFile:
         assert "Error" in result
 
     def test_returns_error_for_missing_file(self, temp_memory_dir):
-        result = update_file(
-            os.path.join(temp_memory_dir, "ghost.md"), "old", "new"
-        )
+        result = update_file(os.path.join(temp_memory_dir, "ghost.md"), "old", "new")
         assert isinstance(result, str)
         assert "Error" in result
 
@@ -147,6 +150,7 @@ class TestUpdateFile:
 # delete_file
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteFile:
     def test_deletes_existing_file(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")
@@ -163,6 +167,7 @@ class TestDeleteFile:
 # ---------------------------------------------------------------------------
 # check_if_file_exists / check_if_dir_exists
 # ---------------------------------------------------------------------------
+
 
 class TestExistenceChecks:
     def test_file_exists(self, memory_with_files):
@@ -191,6 +196,7 @@ class TestExistenceChecks:
 # go_to_link
 # ---------------------------------------------------------------------------
 
+
 class TestGoToLink:
     def test_follows_obsidian_link(self, memory_with_files):
         # The cwd is set to temp_memory_dir by the fixture
@@ -216,6 +222,7 @@ class TestGoToLink:
 # get_size
 # ---------------------------------------------------------------------------
 
+
 class TestGetSize:
     def test_file_size(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")
@@ -238,6 +245,7 @@ class TestGetSize:
 # ---------------------------------------------------------------------------
 # list_files
 # ---------------------------------------------------------------------------
+
 
 class TestListFiles:
     def test_shows_files_in_tree(self, memory_with_files):

@@ -1,3 +1,3 @@
 from .connector import GitHubLiveConnector
 
-__all__ = ['GitHubLiveConnector']
+__all__ = ["GitHubLiveConnector"]

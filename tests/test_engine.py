@@ -4,6 +4,7 @@ Unit tests for agent/engine.py — the sandboxed subprocess executor.
 Tests verify that code executes correctly, that timeouts are enforced,
 and that path restrictions prevent access outside the allowed directory.
 """
+
 import os
 import pytest
 
@@ -59,9 +60,7 @@ class TestErrorHandling:
 class TestTimeout:
     def test_timeout_is_enforced(self):
         # Infinite loop should be killed by timeout
-        locals_dict, error = execute_sandboxed_code(
-            "while True: pass", timeout=2
-        )
+        locals_dict, error = execute_sandboxed_code("while True: pass", timeout=2)
         assert error is not None
         assert "Timeout" in error or "timeout" in error or "TimeoutError" in error
 

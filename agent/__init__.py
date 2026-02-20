@@ -5,7 +5,7 @@ Obsidian Agent package.
 try:
     from .agent import Agent
     from .engine import execute_sandboxed_code
-    
+
     __all__ = [
         "Agent",
         "execute_sandboxed_code",

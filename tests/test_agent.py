@@ -3,6 +3,7 @@ Unit tests for agent/agent.py — the Agent class.
 
 LLM calls are mocked throughout so tests run without a running model server.
 """
+
 import os
 from unittest.mock import MagicMock, patch
 import pytest
@@ -31,6 +32,7 @@ PYTHON_THEN_REPLY = (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def agent(tmp_path):
     """
@@ -51,6 +53,7 @@ def agent(tmp_path):
 # Initialisation
 # ---------------------------------------------------------------------------
 
+
 class TestAgentInit:
     def test_system_prompt_is_first_message(self, agent):
         assert len(agent.messages) == 1
@@ -67,6 +70,7 @@ class TestAgentInit:
 # ---------------------------------------------------------------------------
 # _add_message
 # ---------------------------------------------------------------------------
+
 
 class TestAddMessage:
     def test_add_chat_message(self, agent):
@@ -87,6 +91,7 @@ class TestAddMessage:
 # ---------------------------------------------------------------------------
 # extract_response_parts
 # ---------------------------------------------------------------------------
+
 
 class TestExtractResponseParts:
     def test_extracts_reply(self, agent):
@@ -114,23 +119,30 @@ class TestExtractResponseParts:
 # chat — end-to-end with mocked LLM
 # ---------------------------------------------------------------------------
 
+
 class TestChat:
     def test_simple_chat_returns_agent_response(self, agent):
-        with patch("agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE):
+        with patch(
+            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
+        ):
             response = agent.chat("Hello")
 
         assert isinstance(response, AgentResponse)
         assert response.reply == "Here is your answer."
 
     def test_user_message_added_to_history(self, agent):
-        with patch("agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE):
+        with patch(
+            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
+        ):
             agent.chat("What is my name?")
 
         user_messages = [m for m in agent.messages if m.role == Role.USER]
         assert any("What is my name?" in m.content for m in user_messages)
 
     def test_assistant_message_added_to_history(self, agent):
-        with patch("agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE):
+        with patch(
+            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
+        ):
             agent.chat("Hello")
 
         assistant_messages = [m for m in agent.messages if m.role == Role.ASSISTANT]
@@ -141,15 +153,20 @@ class TestChat:
         When the first response has no <reply>, the agent should loop and
         call get_model_response again, feeding back tool results.
         """
-        responses = iter([
-            # First call: python code, no reply yet
-            "<python>x = 1 + 1</python>",
-            # Second call: reply
-            SIMPLE_REPLY_RESPONSE,
-        ])
+        responses = iter(
+            [
+                # First call: python code, no reply yet
+                "<python>x = 1 + 1</python>",
+                # Second call: reply
+                SIMPLE_REPLY_RESPONSE,
+            ]
+        )
 
         with (
-            patch("agent.agent.get_model_response", side_effect=lambda **_: next(responses)),
+            patch(
+                "agent.agent.get_model_response",
+                side_effect=lambda **_: next(responses),
+            ),
             patch("agent.agent.execute_sandboxed_code", return_value=({"x": 2}, "")),
             patch("agent.agent.create_memory_if_not_exists"),
         ):
@@ -158,7 +175,9 @@ class TestChat:
         assert response.reply == "Here is your answer."
 
     def test_save_conversation_creates_file(self, agent, tmp_path):
-        with patch("agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE):
+        with patch(
+            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
+        ):
             agent.chat("Hello")
 
         save_dir = str(tmp_path / "conversations")

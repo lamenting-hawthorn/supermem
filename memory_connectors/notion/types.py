@@ -10,6 +10,7 @@ from enum import Enum
 
 class BlockType(Enum):
     """Notion block types."""
+
     PAGE = "page"
     HEADING_1 = "heading_1"
     HEADING_2 = "heading_2"
@@ -29,6 +30,7 @@ class BlockType(Enum):
 @dataclass
 class NotionUser:
     """Notion user information."""
+
     id: str
     name: Optional[str] = None
     email: Optional[str] = None
@@ -38,6 +40,7 @@ class NotionUser:
 @dataclass
 class NotionProperty:
     """Notion page property."""
+
     name: str
     type: str
     value: Any
@@ -46,15 +49,16 @@ class NotionProperty:
 @dataclass
 class NotionBlock:
     """Notion block content."""
+
     id: str
     type: BlockType
     content: str
-    children: List['NotionBlock']
+    children: List["NotionBlock"]
     created_time: Optional[datetime] = None
     last_edited_time: Optional[datetime] = None
     has_children: bool = False
     archived: bool = False
-    
+
     def __post_init__(self):
         if isinstance(self.type, str):
             try:
@@ -67,6 +71,7 @@ class NotionBlock:
 @dataclass
 class NotionPage:
     """Notion page with content and metadata."""
+
     id: str
     title: str
     url: Optional[str]
@@ -86,6 +91,7 @@ class NotionPage:
 @dataclass
 class NotionDatabase:
     """Notion database with pages."""
+
     id: str
     title: str
     description: Optional[str]
@@ -102,11 +108,12 @@ class NotionDatabase:
 @dataclass
 class NotionWorkspace:
     """Complete Notion workspace export."""
+
     pages: List[NotionPage]
     databases: List[NotionDatabase]
     user: Optional[NotionUser] = None
     export_date: Optional[datetime] = None
-    
+
     def get_all_pages(self) -> List[NotionPage]:
         """Get all pages including those in databases."""
         all_pages = list(self.pages)
@@ -118,6 +125,7 @@ class NotionWorkspace:
 @dataclass
 class ParsedNotionData:
     """Parsed Notion workspace data."""
+
     workspace: NotionWorkspace
     total_pages: int
     total_databases: int

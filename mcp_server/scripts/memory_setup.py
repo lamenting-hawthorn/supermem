@@ -48,7 +48,9 @@ def choose_directory_with_tk(initialdir: str) -> str | None:
         root.withdraw()
         root.update()
 
-        selected = askdirectory(title="Select Memory Directory", initialdir=initialdir or "~")
+        selected = askdirectory(
+            title="Select Memory Directory", initialdir=initialdir or "~"
+        )
         root.update()
 
         if not selected:
@@ -109,7 +111,9 @@ def main() -> int:
         selected = choose_directory_with_applescript(initialdir=initialdir)
 
     if not selected:
-        print("No directory selected. You can run 'make setup-cli' to enter a path in the terminal.")
+        print(
+            "No directory selected. You can run 'make setup-cli' to enter a path in the terminal."
+        )
         return 1
 
     # Ensure directory exists
@@ -125,5 +129,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

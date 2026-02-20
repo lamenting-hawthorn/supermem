@@ -136,7 +136,9 @@ class Agent:
         remaining_tool_turns = self.max_tool_turns
         while remaining_tool_turns > 0 and not reply:
             self._add_message(
-                ChatMessage(role=Role.USER, content=format_results(result[0], result[1]))
+                ChatMessage(
+                    role=Role.USER, content=format_results(result[0], result[1])
+                )
             )
             response = get_model_response(
                 messages=self.messages,

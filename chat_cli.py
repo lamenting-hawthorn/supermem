@@ -87,7 +87,9 @@ def main() -> None:
 
     console = Console()
     console.print("[bold]Interactive Memory Agent CLI[/bold]")
-    console.print("Type your message and press Enter. Type [bold]quit()[/bold] to exit.\n")
+    console.print(
+        "Type your message and press Enter. Type [bold]quit()[/bold] to exit.\n"
+    )
 
     def render_messages(messages):
         renderables = []
@@ -99,7 +101,9 @@ def main() -> None:
             if role == Role.USER and content.strip().startswith("<result>"):
                 # Extract inner content between <result> and </result>
                 try:
-                    inner = content.split("<result>", 1)[1].split("</result>", 1)[0].strip()
+                    inner = (
+                        content.split("<result>", 1)[1].split("</result>", 1)[0].strip()
+                    )
                 except Exception:
                     inner = content
                 syntax = Syntax(
@@ -110,7 +114,11 @@ def main() -> None:
                     word_wrap=True,
                 )
                 renderables.append(
-                    Panel(syntax, title="[magenta]environment[/magenta]", border_style="magenta")
+                    Panel(
+                        syntax,
+                        title="[magenta]environment[/magenta]",
+                        border_style="magenta",
+                    )
                 )
                 continue
 
@@ -119,7 +127,11 @@ def main() -> None:
                 continue
             elif role == Role.USER:
                 renderables.append(
-                    Panel(Text(content, style="cyan"), title="[cyan]you[/cyan]", border_style="cyan")
+                    Panel(
+                        Text(content, style="cyan"),
+                        title="[cyan]you[/cyan]",
+                        border_style="cyan",
+                    )
                 )
             elif role == Role.ASSISTANT:
                 # Build a raw agent panel containing colorized think/python/reply blocks (with tags)
@@ -148,7 +160,9 @@ def main() -> None:
                 if not raw_sections:
                     raw_sections.append(Text((content or "").strip(), style="green"))
 
-                body = raw_sections[-1] if len(raw_sections) == 1 else Group(*raw_sections)
+                body = (
+                    raw_sections[-1] if len(raw_sections) == 1 else Group(*raw_sections)
+                )
                 renderables.append(
                     Panel(body, title="[green]agent[/green]", border_style="green")
                 )
@@ -156,7 +170,11 @@ def main() -> None:
                 # If there is a reply, add a second panel with just the reply text
                 if reply_text:
                     renderables.append(
-                        Panel(Text(reply_text, style="green"), title="[green]agent[/green]", border_style="green")
+                        Panel(
+                            Text(reply_text, style="green"),
+                            title="[green]agent[/green]",
+                            border_style="green",
+                        )
                     )
             else:
                 renderables.append(Panel(Text(content), title=str(role)))
@@ -198,8 +216,11 @@ def main() -> None:
         t = threading.Thread(target=_run_agent, daemon=True)
         t.start()
 
-        with Live(Panel(Text("Waiting for agent...", style="yellow"), border_style="yellow"),
-                  console=console, refresh_per_second=8) as live:
+        with Live(
+            Panel(Text("Waiting for agent...", style="yellow"), border_style="yellow"),
+            console=console,
+            refresh_per_second=8,
+        ) as live:
             while t.is_alive():
                 messages_snapshot = list(agent.messages)[start_index:]
                 panels = render_messages(messages_snapshot)
@@ -216,15 +237,17 @@ def main() -> None:
             messages_snapshot = list(agent.messages)[start_index:]
             panels = render_messages(messages_snapshot)
             body = panels[-1] if len(panels) == 1 else Group(*panels)
-            live.update(Panel(body, title="Conversation", border_style="white"), refresh=True)
+            live.update(
+                Panel(body, title="Conversation", border_style="white"), refresh=True
+            )
 
         t.join()
 
         if result_container["error"] is not None:
-            console.print(f"[red]agent_error[/red]: {type(result_container['error']).__name__}: {result_container['error']}\n")
+            console.print(
+                f"[red]agent_error[/red]: {type(result_container['error']).__name__}: {result_container['error']}\n"
+            )
 
 
 if __name__ == "__main__":
     main()
-
-

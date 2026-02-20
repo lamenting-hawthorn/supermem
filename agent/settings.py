@@ -27,6 +27,6 @@ MEMORY_SIZE_LIMIT = 1024 * 1024 * 100  # 100MB
 SANDBOX_TIMEOUT = 20
 
 # Path settings
-#SYSTEM_PROMPT_PATH = "agent/system_prompt.txt"
+# SYSTEM_PROMPT_PATH = "agent/system_prompt.txt"
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.txt"
 SAVE_CONVERSATION_PATH = "output/conversations/"

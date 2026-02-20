@@ -1,6 +1,7 @@
 """
 Shared pytest fixtures for the Recall test suite.
 """
+
 import os
 import tempfile
 import pytest
@@ -37,10 +38,6 @@ def memory_with_files(temp_memory_dir):
 
     alice_md = os.path.join(entities_dir, "alice.md")
     with open(alice_md, "w") as f:
-        f.write(
-            "# Alice\n"
-            "- relationship: Colleague\n"
-            "- company: Acme Corp\n"
-        )
+        f.write("# Alice\n" "- relationship: Colleague\n" "- company: Acme Corp\n")
 
     return temp_memory_dir

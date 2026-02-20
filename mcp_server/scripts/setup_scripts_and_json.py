@@ -4,6 +4,7 @@ import os, shutil, json
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 print(f"Repo root: {REPO_ROOT}")
 
+
 def resolve_uv_path() -> str:
     uv = os.environ.get("UV")  # set when invoked via `uv run`
     if uv:
@@ -11,7 +12,8 @@ def resolve_uv_path() -> str:
     uv_in_path = shutil.which("uv")
     if uv_in_path:
         return uv_in_path
-    return "uv" 
+    return "uv"
+
 
 START_SERVER_SCRIPT_TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
@@ -29,7 +31,10 @@ echo "INFO: Python path: $({uv_path} run which python)" >&2
 exec {uv_path} run python mcp_server/server.py
 """
 
-MCP_JSON_TEMPLATE = None  # unused; kept for backward-compatibility if imported elsewhere
+MCP_JSON_TEMPLATE = (
+    None  # unused; kept for backward-compatibility if imported elsewhere
+)
+
 
 def generate_start_server_script() -> None:
     """
@@ -38,29 +43,36 @@ def generate_start_server_script() -> None:
     """
     uv_path = resolve_uv_path()
     script = START_SERVER_SCRIPT_TEMPLATE.format(repo_root=REPO_ROOT, uv_path=uv_path)
-    
-    try:    
+
+    try:
         os.makedirs(os.path.join(REPO_ROOT, "mcp_server", "scripts"), exist_ok=True)
-        start_script_path = os.path.join(REPO_ROOT, "mcp_server", "scripts", "start_server.sh")
+        start_script_path = os.path.join(
+            REPO_ROOT, "mcp_server", "scripts", "start_server.sh"
+        )
         with open(start_script_path, "w") as f:
             f.write(script)
         try:
             os.chmod(start_script_path, 0o755)
         except Exception:
             pass
-        print(f"Generated start_server.sh script in {os.path.join(REPO_ROOT, 'mcp_server', 'scripts')}")
+        print(
+            f"Generated start_server.sh script in {os.path.join(REPO_ROOT, 'mcp_server', 'scripts')}"
+        )
     except Exception as e:
         print(f"Error generating start_server.sh script: {e}")
 
+
 def generate_mcp_json() -> None:
     """
-    Generates the mcp.json file and saves it at 
+    Generates the mcp.json file and saves it at
     the top level of the repo root.
     """
     config = {
         "mcpServers": {
             "memory-agent-stdio": {
-                "command": os.path.join(REPO_ROOT, "mcp_server", "scripts", "start_server.sh"),
+                "command": os.path.join(
+                    REPO_ROOT, "mcp_server", "scripts", "start_server.sh"
+                ),
                 "env": {
                     "FASTMCP_LOG_LEVEL": "INFO",
                     "MCP_TRANSPORT": "stdio",
@@ -77,9 +89,11 @@ def generate_mcp_json() -> None:
     except Exception as e:
         print(f"Error generating mcp.json file: {e}")
 
+
 def main() -> None:
     generate_start_server_script()
     generate_mcp_json()
+
 
 if __name__ == "__main__":
     main()
