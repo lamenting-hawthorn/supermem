@@ -20,9 +20,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["server", "settings", "memory_setup"]
 
-[tool.uv]
-dev-dependencies = [
-    "pytest",
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
 ]
 
 [tool.uv.sources]

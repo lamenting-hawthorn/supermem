@@ -98,14 +98,16 @@ class TestPathRestriction:
         assert locals_dict.get("escaped") is False
 
 
+# Must be defined at module level — pickle cannot serialize local functions
+def _add(a, b):
+    return a + b
+
+
 class TestAvailableFunctions:
     def test_custom_function_is_callable(self):
-        def add(a, b):
-            return a + b
-
         locals_dict, error = execute_sandboxed_code(
             "result = add(3, 4)",
-            available_functions={"add": add},
+            available_functions={"add": _add},
         )
         assert not error
         assert locals_dict["result"] == 7
