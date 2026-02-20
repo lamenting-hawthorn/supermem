@@ -26,9 +26,9 @@ py-modules = ["agent", "tools", "model", "engine", "schemas", "utils", "settings
 [tool.setuptools.package-data]
 "*" = ["*.txt"]
 
-[tool.uv]
-dev-dependencies = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
 ]
