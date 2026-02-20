@@ -1,60 +1,179 @@
-# mem-agent-mcp
+# Recall
 
-This is an MCP server for our model [driaforall/mem-agent](https://huggingface.co/driaforall/mem-agent), which can be connected to apps like Claude Desktop or Lm Studio to interact with an obsidian-like memory system.
+> **Persistent AI memory without RAG** — an agent that navigates your knowledge base like a filesystem, not a vector index.
+
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
+
+An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — a **persistent, structured memory** backed by local markdown files. Powered by [driaforall/mem-agent](https://huggingface.co/driaforall/mem-agent), a fine-tuned model purpose-built for memory navigation.
+
+---
+
+## Why Not RAG?
+
+Most AI memory systems use **RAG (Retrieval-Augmented Generation)**: embed your documents as vectors, then retrieve the "most similar" chunks at query time. This works well for large corpora but has a hard ceiling — if the embedding similarity doesn't surface the right chunk, that information is effectively invisible to the model.
+
+**mem-agent takes a different approach:**
+
+| | RAG | mem-agent |
+|---|---|---|
+| **Retrieval** | Embedding similarity (top-k chunks) | Agent navigates the file graph directly |
+| **Memory limit** | Bounded by embedding quality | Technically unlimited — agent can explore any path |
+| **Multi-hop reasoning** | Limited (single retrieval step) | Native (follows [[wikilinks]] across files) |
+| **Write support** | Rarely | First-class — agent reads and writes memory |
+| **Speed** | Fast (one vector lookup) | Slow (multiple LLM calls + file I/O per query) |
+| **Retrieval failures** | Silent (wrong embedding = missed info) | Explicit (agent reports what it couldn't find) |
+
+**The tradeoff is real:** this is slower than RAG. Each query may require several LLM inference calls as the agent reasons about, navigates, and reads your memory. If you need sub-second retrieval over millions of documents, use RAG. If you want an assistant that can genuinely reason about your personal knowledge base and never miss information due to embedding drift, this is for you.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        AI Client                            │
+│           (Claude Desktop / LM Studio / ChatGPT)           │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ MCP (stdio / HTTP / SSE)
+┌───────────────────────▼─────────────────────────────────────┐
+│                    mcp_server/                               │
+│         FastMCP server — exposes memory tool to client      │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────────────┐
+│                      agent/                                  │
+│                                                             │
+│  User query                                                 │
+│      │                                                      │
+│      ▼                                                      │
+│  Agent LLM (mem-agent, MLX/vLLM)                           │
+│      │  generates <think> + <python> blocks                 │
+│      ▼                                                      │
+│  Sandboxed subprocess  ◄──── tools.py (file API)           │
+│      │  path-restricted, 20s timeout                       │
+│      ▼                                                      │
+│  Results fed back → up to 20 tool turns                    │
+│      │                                                      │
+│      ▼                                                      │
+│  Final <reply> returned to client                           │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ read / write
+┌───────────────────────▼─────────────────────────────────────┐
+│                 Memory (local markdown vault)                │
+│                                                             │
+│   memory/                                                   │
+│   ├── user.md              ← root profile + nav links       │
+│   └── entities/                                             │
+│       ├── jane_doe.md      ← [[linked]] from user.md        │
+│       └── acme_corp.md     ← [[linked]] from user.md        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Memory connectors** (separate package) import data from ChatGPT, Notion, Nuclino, GitHub, and Google Docs into the markdown vault before the agent ever runs.
+
+---
 
 ## Supported Platforms
 
-- macOS (Metal backend)
-- Linux (with GPU, vLLM backend)
+| Platform | Backend | Requirement |
+|---|---|---|
+| macOS | MLX (Apple Silicon) | LM Studio |
+| Linux | vLLM (GPU) | CUDA GPU |
+| Any OS | OpenRouter API | `OPENROUTER_API_KEY` |
 
-## Running Instructions
+---
 
-1. `make check-uv` (if you have uv installed, skip this step).
-2. `make install`: Installs LmStudio on MacOS.
-3. `make setup`: This will open a file selector and ask you to select the directory where you want to store the memory. 
-4. `make run-agent`: If you're on macOS, this will prompt you to select the precision of the model you want to use. 4-bit is very usable as tested, and higher precision models are more reliable but slower.
-5. `make generate-mcp-json`: Generates the `mcp.json` file. That will be used in the next step.
-6. Instructions per app/provider:
-    - Claude Desktop:
-        - Copy the generated `mcp.json` to the where your `claude_desktop.json` is located, then, quit and restart Claude Desktop. Check [this guide](https://modelcontextprotocol.io/quickstart/user) for detailed instructions.
-    - Lm Studio:
-        - Copy the generated `mcp.json` to the `mcp.json` of Lm Studio. Check [this guide](https://lmstudio.ai/docs/app/plugins/mcp) for detailed instructions. If there are problems, change the name of the model in .mlx_model_name (found in the root of this repo) from `mem-agent-mlx-4bit` or `mem-agent-mlx-8bit` to `mem-agent-mlx@4bit` or `mem-agent-mlx@8bit` respectively.
+## Quick Start
 
+> **Requires Python 3.11.** If you don't have it, `uv` will install it automatically.
 
-## Memory Instructions
+### Path A — No GPU (OpenRouter API)
 
-- Each memory directory should follow the structure below:
+The fastest way to get running. No local model server needed.
+
+```bash
+# 1. Get a free API key at https://openrouter.ai/keys
+# 2. Run:
+make quickstart
+# Copies .env.example → .env, prompts you to add your API key,
+# installs deps, and sets up your memory directory.
+
+# 3. Start chatting:
+make chat-cli
+```
+
+### Path B — Local model (Apple Silicon / Linux GPU)
+
+Fully private — no data leaves your machine.
+
+```bash
+make quickstart-local
+# Installs deps + LM Studio, sets up memory, starts the model server.
+# Prompts for model precision (4-bit recommended to start).
+```
+
+### Connect to your AI client
+
+**Claude Desktop:**
+```bash
+make generate-mcp-json
+# Copy mcp.json → ~/.config/claude/claude_desktop.json
+# Restart Claude Desktop
+```
+
+**LM Studio:**
+```bash
+make generate-mcp-json
+# Copy mcp.json to LM Studio's mcp.json location
+# See: https://lmstudio.ai/docs/app/plugins/mcp
+```
+
+**Claude Code (terminal):**
+```bash
+claude mcp add mem-agent \
+  --env MEMORY_DIR="/path/to/your/memory" \
+  -- python "/path/to/mcp_server/server.py"
+
+claude mcp list  # verify it appears
+```
+
+**ChatGPT:**
+```bash
+make serve-mcp-http          # FastAPI on :8081
+# In another terminal:
+ngrok http 8081
+# Add https://your-ngrok-url.ngrok.io/mcp to ChatGPT → Settings → Connectors
+```
+
+---
+
+## Memory Structure
+
+The agent navigates an **Obsidian-style** markdown vault with wikilinks:
+
 ```
 memory/
-    ├── user.md
-    └── entities/
-        └── [entity_name_1].md
-        └── [entity_name_2].md
-        └── ...
+├── user.md              # Root — your profile and all entity links
+└── entities/
+    ├── jane_doe.md      # Linked from user.md as [[entities/jane_doe]]
+    └── acme_corp.md
 ```
 
-- `user.md` is the main file that contains information about the user and their relationships, accompanied by links to the enity file in the format of `[[entities/[entity_name].md]]` per relationship. The link format should be followed strictly.
-- `entities/` is the directory that contains the entity files.
-- Each entity file follows the same structure as `user.md`.
-- Modifying the memory manually does not require restarting the MCP server.
-
-### Example user.md
-
+**user.md** example:
 ```markdown
 # User Information
 - user_name: John Doe
 - birth_date: 1990-01-01
-- birth_location: New York, USA
 - living_location: Enschede, Netherlands
-- zodiac_sign: Aquarius
 
 ## User Relationships
 - company: [[entities/acme_corp.md]]
 - mother: [[entities/jane_doe.md]]
 ```
 
-### Example entity files (jane_doe.md and acme_corp.md)
-
+**Entity file** example:
 ```markdown
 # Jane Doe
 - relationship: Mother
@@ -62,413 +181,254 @@ memory/
 - birth_location: New York, USA
 ```
 
-```markdown 
-# Acme Corporation
-- industry: Software Development
-- location: Enschede, Netherlands
+The agent can follow `[[wikilinks]]` across files, enabling multi-hop reasoning: *"What city does John's mother live in?"* → reads `user.md` → follows link → reads `jane_doe.md` → answers.
+
+> Modifying memory files manually does not require restarting the MCP server.
+
+---
+
+## Importing Existing Data
+
+The fastest way to populate memory from real data:
+
+```bash
+make memory-wizard   # interactive setup for any connector
 ```
-
-## Filtering
-
-The model is trained to accepts filters on various domains in between <filter> tags after the user query. These filters are used to filter the retrieved information and/or obfuscate it completely. An example of a user query with filters is:
-
-```
-What's my mother's age? <filter> 1. Do not reveal explicit age information, 2. Do not reveal any email addresses </filter>
-```
-
-To use this, functionality with the MCP, you have two make targets:
-- `make add-filters`: Opens an input loop and adds the filters given by the user to the .filters file.
-- `make reset-filters`: Resets the .filters file (clears it).
-
-Adding or removing filters does not require restarting the MCP server.
-
-
-## Memory Connectors
 
 ### Available Connectors
 
-| Connector | Description | Supported Formats | Type |
-|-----------|-------------|-------------------|------|
-| `chatgpt` | ChatGPT conversation exports | `.zip`, `.json` | Export |
-| `notion` | Notion workspace exports | `.zip` | Export |
-| `nuclino` | Nuclino workspace exports | `.zip` | Export |
-| `github` | GitHub repositories via API | Live API | Live |
-| `google-docs` | Google Docs folders via Drive API | Live API | Live |
+| Connector | Source | Method |
+|---|---|---|
+| `chatgpt` | ChatGPT export `.zip` | Offline export |
+| `notion` | Notion export `.zip` | Offline export |
+| `nuclino` | Nuclino export `.zip` | Offline export |
+| `github` | GitHub API | Live (token) |
+| `google-docs` | Google Drive | Live (OAuth 2.0) |
 
-### Usage
+### ChatGPT History
 
-#### 🧙‍♂️ Interactive Memory Wizard (Recommended)
-The easiest way to connect your memory sources:
+1. Go to [ChatGPT Settings → Data Controls](https://chatgpt.com/settings/data-controls) → Export data
+2. Wait for the email, download the ZIP
+3. Run:
 
 ```bash
-make memory-wizard
-# or
-python memory_wizard.py
-```
+make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip
 
-The wizard will guide you through:
-- ✅ Connector selection with descriptions
-- ✅ Authentication setup (tokens, scopes)  
-- ✅ Source configuration (files, URLs, IDs)
-- ✅ Output directory setup
-- ✅ Connector-specific options
-- ✅ Configuration confirmation
-- ✅ Automatic execution
-- ✅ Success confirmation with next steps
+# With AI-powered categorization (semantic, requires LM Studio):
+python memory_connectors/memory_connect.py chatgpt /path/to/export.zip \
+  --method ai --embedding-model lmstudio
 
-#### Manual CLI Usage
-
-**Quick Demo with Sample Memories:**
-```bash
-make run-agent
-make serve-mcp-http
-python examples/mem_agent_cli.py
-```
-
-Sample memory packs (`healthcare` and `client_success`) are included to demonstrate mem-agent functionality with different data types. Use the interactive CLI to explore these memories and test prompts.
-
-List Available Connectors:
-```bash
-make connect-memory
-# or
-python memory_connectors/memory_connect.py --list
-
-#### ChatGPT History Import
-```bash
-# Basic usage
-make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/chatgpt-export.zip
-
-# AI-powered categorization with TF-IDF (fast)
-python memory_connectors/memory_connect.py chatgpt /path/to/export.zip --method ai --embedding-model tfidf
-
-# AI-powered categorization with LM Studio (high-quality semantic)
-python memory_connectors/memory_connect.py chatgpt /path/to/export.zip --method ai --embedding-model lmstudio
-
-# Keyword-based with custom categories
-python memory_connectors/memory_connect.py chatgpt /path/to/export.zip --method keyword --edit-keywords
-
-# Process limited conversations
-python memory_connectors/memory_connect.py chatgpt /path/to/export.zip --max-items 100
-```
-
-**Categorization Methods:**
-- **Keyword-based**: Fast, customizable categories using predefined keywords
-- **AI-powered (TF-IDF)**: Statistical clustering, discovers conversation patterns
-- **AI-powered (LM Studio)**: Semantic embeddings via neural networks (requires LM Studio)
-
-# Custom output location
-make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip OUTPUT=./memory/custom
-
-# Process only first 100 conversations
+# Limit scope for testing:
 make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip MAX_ITEMS=100
+```
 
-# Direct CLI usage
-python memory_connect.py chatgpt /path/to/export.zip --output ./memory --max-items 100
+### Notion
 
-#### Notion Workspace Import
+1. Notion workspace settings → Export content → Markdown & CSV → Export all
+2. Run:
+
 ```bash
-# Basic usage
 make connect-memory CONNECTOR=notion SOURCE=/path/to/notion-export.zip
-
-# Custom output location
-make connect-memory CONNECTOR=notion SOURCE=/path/to/export.zip OUTPUT=./memory/custom
-  
-python memory_connectors/memory_connect.py notion /path/to/export.zip --output ./memory
 ```
 
-#### Getting ChatGPT Export
-1. Go to [ChatGPT Settings](https://chatgpt.com/settings/data-controls)
-2. Click "Export data"
-3. Wait for email with download link
-4. Extract the ZIP file
-5. Use the extracted folder or ZIP file with the connector
+### Nuclino
 
-#### Nuclino Workspace Import
+1. Workspace menu (☰) → ⋮ → Workspace settings → Export Workspace
+2. Run:
+
 ```bash
-# Basic usage
 make connect-memory CONNECTOR=nuclino SOURCE=/path/to/nuclino-export.zip
-
-# Custom output location  
-make connect-memory CONNECTOR=nuclino SOURCE=/path/to/export.zip OUTPUT=./memory/custom
-
-# Direct CLI usage
-python memory_connectors/memory_connect.py nuclino /path/to/export.zip --output ./memory
 ```
 
-#### Getting Notion Export
-1. Go to your Notion workspace settings
-2. Click "Settings & members" → "Settings"
-3. Scroll to "Export content" and click "Export all workspace content"
-4. Choose "Markdown & CSV" format
-5. Click "Export" and wait for the download
-6. Use the downloaded ZIP file with the connector
+### GitHub (live)
 
-#### Getting Nuclino Export
-1. Go to your Nuclino workspace
-2. Open the main menu (☰) in the top left
-3. Click the three dots (⋮) next to your workspace name
-4. Select "Workspace settings"
-5. Click "Export Workspace" in the Export section
-6. Save the generated ZIP file
-7. Use the downloaded ZIP file with the connector
-
-#### GitHub Live Integration
 ```bash
-# Basic usage - single repository
-make connect-memory CONNECTOR=github SOURCE="microsoft/vscode" TOKEN=your_github_token
+# Single repo
+make connect-memory CONNECTOR=github SOURCE="owner/repo" TOKEN=your_github_token
 
-# Multiple repositories
+# Multiple repos
 make connect-memory CONNECTOR=github SOURCE="owner/repo1,owner/repo2" TOKEN=your_token
 
-# Custom output and limits
-make connect-memory CONNECTOR=github SOURCE="facebook/react" OUTPUT=./memory/custom MAX_ITEMS=50 TOKEN=your_token
-
-# Direct CLI usage with interactive token input
-python memory_connectors/memory_connect.py github "microsoft/vscode" --max-items 100
-
-# Include specific content types
-python memory_connectors/memory_connect.py github "owner/repo" --include-issues --include-prs --include-wiki --token your_token
+# With content type control
+python memory_connectors/memory_connect.py github "owner/repo" \
+  --include-issues --include-prs --include-wiki --token your_token
 ```
 
-#### Getting GitHub Personal Access Token
-1. Go to [GitHub Settings → Tokens](https://github.com/settings/tokens)
-2. Click "Generate new token" → "Generate new token (classic)"
-3. Set expiration and select scopes:
-   - For **public repositories**: `public_repo` scope
-   - For **private repositories**: `repo` scope (full access)
-4. Click "Generate token" and copy the generated token
-5. Use the token with the `--token` parameter or enter it when prompted
+Get a token: [GitHub Settings → Tokens](https://github.com/settings/tokens) → `public_repo` scope for public repos, `repo` for private.
 
-**Note**: Keep your token secure and never commit it to version control!
+### Google Docs (live)
 
-#### Google Docs Live Integration
 ```bash
-# Basic usage - specific folder
-make connect-memory CONNECTOR=google-docs SOURCE="1ABC123DEF456_folder_id" TOKEN=your_access_token
-
-# Using Google Drive folder URL
-make connect-memory CONNECTOR=google-docs SOURCE="https://drive.google.com/drive/folders/1ABC123DEF456" TOKEN=your_token
-
-# Custom output and limits
-make connect-memory CONNECTOR=google-docs SOURCE="folder_id" OUTPUT=./memory/custom MAX_ITEMS=20 TOKEN=your_token
-
-# Direct CLI usage with interactive token input
-python memory_connectors/memory_connect.py google-docs "1ABC123DEF456_folder_id" --max-items 15
+make connect-memory CONNECTOR=google-docs SOURCE="folder_id" TOKEN=your_access_token
 ```
 
-#### Getting Google Drive Access Token
+Get an access token via [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground/) (select `Drive API v3 → drive.readonly`).
 
-**Option 1: Google OAuth 2.0 Playground (Quick Testing)**
-1. Go to [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground/)
-2. In "Select & Authorize APIs" section:
-   - Find "Drive API v3"
-   - Select `https://www.googleapis.com/auth/drive.readonly`
-3. Click "Authorize APIs" and sign in to your Google account
-4. Click "Exchange authorization code for tokens"
-5. Copy the "Access token" (valid for ~1 hour)
+Find folder ID from URL: `https://drive.google.com/drive/folders/`**`1ABC123DEF456`** ← that's the ID.
 
-**Option 2: Google Cloud Console (Production Use)**
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Enable the "Google Drive API"
-4. Go to "Credentials" → "Create Credentials" → "OAuth 2.0 Client ID"
-5. Configure OAuth consent screen if needed
-6. Download the credentials JSON file
-7. Use Google's OAuth 2.0 libraries to get access tokens
+---
 
-**Required Scopes**: `https://www.googleapis.com/auth/drive.readonly`
+## Privacy Filters
 
-**Finding Folder ID from Google Drive URL**:
-- From URL: `https://drive.google.com/drive/folders/1ABC123DEF456ghi789`  
-- Folder ID: `1ABC123DEF456ghi789`
+The agent accepts `<filter>` tags to redact specific information from responses:
 
-**Note**: Access tokens expire (usually 1 hour). For production use, implement token refresh or use service accounts.
-
-### Memory Organization
-
-The connectors automatically organize your conversations into:
-
-- **Topics**: Conversations grouped by subject (AI Agents, Programming, Product Strategy, etc.)
-- **User Profile**: Your communication style and preferences
-- **Entity Links**: Cross-referenced relationships and projects
-- **Search Strategy**: Optimized for mem-agent discovery
-
-Example organized structure:
 ```
-memory/mcp-server/
-├── user.md                     # Your profile and navigation
-└── entities/
-    └── chatgpt-history/
-        ├── index.md            # Overview and usage examples
-        ├── topics/             # Topic-organized conversation lists
-        │   ├── dria.md
-        │   ├── ai-agents.md
-        │   └── programming.md
-        └── conversations/      # Individual conversation files
-            ├── conv_0-project-discussion.md
-            └── conv_1-technical-planning.md
+What's my mother's age? <filter> 1. Do not reveal explicit age information </filter>
 ```
-  
-### Testing Your Memory
 
-After importing, test the memory system:
-
-1. Start the mem-agent: `make run-agent`
-2. Start Claude Desktop with the MCP server
-3. Ask questions like:
-   - "What can you tell me about our product roadmap?"
-   - "What were my thoughts on AI agent frameworks?"
-   - "Summarize my recent technical discussions"
-
-The agent should access your real conversation history instead of providing generic responses.
-
-## Architecture
-
-### Mem-Agent
-- **Dria's Memory Agent**: Specialized LLM fine-tuned for memory management and retrieval
-- **Local Deployment**: Runs via LM Studio (MLX) or vLLM for privacy and speed
-- **Multiple Variants**: 4-bit, 8-bit, and bf16 quantizations available
-- **Tool Integration**: Purpose-built for file operations and memory search
-
-### Memory Structure
-- **Obsidian-style**: Markdown files with wikilink navigation
-- **Topic Organization**: Automatic categorization by subject matter
-- **Entity Relationships**: Cross-referenced connections between conversations
-- **Search Optimization**: Structured for efficient agent discovery
-
-### MCP Integration
-- **FastMCP Framework**: High-performance Model Context Protocol server
-- **Claude Desktop**: Claude's desktop app
-- **Claude Code**: Anthropic's agentic coding tool that lives in your terminal
-
-#### Claude Code Setup
-
-**Prerequisites**: Start your memory server first:
+Manage filters via:
 ```bash
-make run-agent  # Required: vLLM or MLX model server must be running
+make add-filters    # add filters interactively
+make reset-filters  # clear all filters
 ```
 
-**Add MCP Server:**
+Changes take effect immediately without restarting the server.
+
+---
+
+## Running Tests
+
 ```bash
-claude mcp add mem-agent \
-  --env MEMORY_DIR="/path/to/your/memory/directory" \
-  -- python "/path/to/mcp_server/server.py"
+# Install dev dependencies
+uv sync
+
+# Run all tests
+uv run pytest tests/ -v
+
+# Run a specific test file
+uv run pytest tests/test_tools.py -v
+
+# Run with coverage
+uv run pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-**Verify & Use:**
-```bash
-claude mcp list  # Should show mem-agent as connected
-```
-
-Now Claude Code can access your memory system for contextual assistance during development.
-- **Tool Execution**: Sandboxed code execution for memory operations
-- **Debug Logging**: Comprehensive logging for troubleshooting
-
-#### ChatGPT Integration
-
-**Prerequisites**: Complete memory setup and start your local agent:
-```bash
-make setup      # Configure memory directory
-make run-agent  # Start local vLLM/MLX model server
-```
-
-**Start MCP-Compliant HTTP Server:**
-```bash
-make serve-mcp-http  # Starts server on localhost:8081/mcp
-```
-
-**Expose with ngrok (separate terminal):**
-```bash
-ngrok http 8081  # Copy the forwarding URL
-```
-
-**Configure ChatGPT:**
-1. Go to [ChatGPT Settings → Connectors](https://chatgpt.com/#settings/Connectors)
-2. Enable **Developer mode** in Advanced settings
-3. Add new MCP server:
-   - **Name**: `mem-agent`
-   - **URL**: `https://your-ngrok-url.ngrok.io/mcp`
-   - **Protocol**: HTTP
-   - **Authentication**: None
-
-**Usage in ChatGPT:**
-Select **Developer mode** → Choose `mem-agent` connector → Ask questions like:
-- "Use mem-agent to search my memory for discussions about AI research"
-- "Query my memory for information about recent project work"
-
-## Troubleshooting
-
-### Common Issues
-
-**Agent returns generic responses instead of using memory:**
-- Check that memory files exist in the configured path
-- Verify user.md contains proper topic navigation
-- Enable debug logging to see agent's reasoning process
-- Test with direct questions about known conversation topics
-
-**MCP connection issues:**
-- Check Claude Desktop configuration in `~/.config/claude/claude_desktop.json`
-- Verify PATH configuration includes LM Studio binary
-- Increase timeout settings for large memory imports
-- Review logs in `~/Library/Logs/Claude/mcp-server-memory-agent-stdio.log`
-
-**Memory import failures:**
-- Ensure export format is supported (.zip or .json for ChatGPT)
-- Check file permissions and disk space
-- Try with --max-items to limit processing scope
-- Verify export contains expected data structure
-
-### Debug Mode
-
-Enable detailed logging by setting environment variables:
-```bash
-FASTMCP_LOG_LEVEL=DEBUG make serve-mcp
-```
-
-Or check the agent's internal reasoning in the log files during operation.
+---
 
 ## Development
 
-### Adding New Connectors
+### Project Structure
 
-1. Create connector class inheriting from `BaseMemoryConnector`
-2. Implement required methods: `extract_data()`, `organize_data()`, `generate_memory_files()`
-3. Add to connector registry in `memory_connect.py`
-4. Update README with usage examples
+```
+mem-agent-mcp/
+├── agent/                   # Core agent package
+│   ├── agent.py             # Agent class + conversation loop
+│   ├── engine.py            # Sandboxed subprocess executor
+│   ├── model.py             # LLM client (OpenRouter/vLLM)
+│   ├── tools.py             # File operation API for the agent
+│   ├── schemas.py           # Pydantic models
+│   ├── settings.py          # Environment config
+│   ├── utils.py             # Helpers (prompt loading, parsing)
+│   └── system_prompt.txt    # Agent behavior spec
+├── mcp_server/              # FastMCP server wrappers
+│   ├── server.py            # stdio transport (Claude Desktop)
+│   ├── mcp_http_server.py   # HTTP transport (ChatGPT)
+│   ├── mcp_sse_server.py    # SSE transport
+│   └── scripts/             # Setup utilities
+├── memory_connectors/       # Data import plugin system
+│   ├── base.py              # Abstract connector interface
+│   ├── chatgpt_history/
+│   ├── notion/
+│   ├── nuclino/
+│   ├── github_live/
+│   ├── google_docs_live/
+│   ├── memory_connect.py    # CLI router
+│   └── memory_wizard.py     # Interactive wizard
+├── memories/                # Sample memory packs (healthcare, client_success)
+├── examples/
+│   └── mem_agent_cli.py     # Interactive CLI demo
+├── tests/                   # pytest test suite
+└── chat_cli.py              # Rich-formatted terminal REPL
+```
 
-Example connector skeleton:
+### Adding a New Memory Connector
+
+1. Create a directory under `memory_connectors/`
+2. Implement a class inheriting `BaseMemoryConnector`:
+
 ```python
 from memory_connectors.base import BaseMemoryConnector
+from typing import Dict, Any
 
-class MyConnector(BaseMemoryConnector):
+class MyServiceConnector(BaseMemoryConnector):
     @property
     def connector_name(self) -> str:
         return "My Service"
-    
-    @property 
+
+    @property
     def supported_formats(self) -> list:
         return ['.zip', '.json']
-    
+
     def extract_data(self, source_path: str) -> Dict[str, Any]:
-        # Parse source data
-        pass
-    
+        # Parse the source data into a flat dict
+        ...
+
     def organize_data(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
-        # Organize into topics  
-        pass
-    
+        # Group/categorize by topic
+        ...
+
     def generate_memory_files(self, organized_data: Dict[str, Any]) -> None:
-        # Generate markdown files
-        pass
+        # Write Obsidian-style markdown files
+        ...
 ```
 
-### Contributing
+3. Register it in `memory_connectors/memory_connect.py`
+4. Add usage examples to this README
 
-This system is designed as local add-ons that don't affect the main mem-agent-mcp repository:
+### Sandbox Security
 
-- Memory connectors are local extensions
-- Legacy compatibility is maintained
-- All changes preserve existing functionality
-- Debug improvements enhance troubleshooting
+All agent-generated Python code runs in a **separate subprocess** (`agent/engine.py`) with:
+- Working directory locked to the configured memory path
+- `open()`, `os.remove()`, `os.rename()` wrapped to deny paths outside memory root
+- Configurable builtin blacklist (exec, eval, etc.)
+- 20-second hard timeout
+- Only picklable results returned to the main process
 
-Pull requests welcome for new connectors and improvements!
+### Environment Variables
+
+Copy `.env.example` to `.env` and fill in what you need:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Cloud LLM (Path A) | — |
+| `MEMORY_DIR` | Override memory directory | from `.memory_path` |
+| `VLLM_HOST` / `VLLM_PORT` | vLLM server (Linux) | `0.0.0.0:8000` |
+| `FASTMCP_LOG_LEVEL` | Log verbosity | `INFO` |
+| `MCP_TRANSPORT` | `stdio` / `http` / `sse` | `stdio` |
+
+`.env` is gitignored — it will never be committed.
+
+---
+
+## Troubleshooting
+
+**Agent gives generic responses instead of using memory:**
+- Confirm memory files exist at the configured path
+- Check that `user.md` has proper topic links
+- Enable debug logging: `FASTMCP_LOG_LEVEL=DEBUG make serve-mcp`
+- Check logs at `~/Library/Logs/Claude/mcp-server-memory-agent-stdio.log` (macOS)
+
+**MCP connection issues:**
+- Verify `~/.config/claude/claude_desktop.json` has the correct paths
+- Ensure the LM Studio / vLLM server is running before starting the MCP server
+- On LM Studio, try changing model name in `.mlx_model_name` from `mem-agent-mlx-4bit` to `mem-agent-mlx@4bit`
+
+**Memory import failures:**
+- Check that the export format is supported
+- Try `--max-items 10` to limit scope and confirm the connector works
+- Verify file permissions on the output directory
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and how to submit pull requests.
+
+---
+
+## License
+
+[Apache 2.0](LICENSE) — © Recall contributors

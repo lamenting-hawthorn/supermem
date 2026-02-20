@@ -1,7 +1,7 @@
 [project]
-name = "mem-agent-mcp"
+name = "recall"
 version = "0.1.0"
-description = "Top-level workspace aggregating agent and mcp_server"
+description = "Persistent AI memory without RAG — agent-navigated local knowledge base via MCP"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [

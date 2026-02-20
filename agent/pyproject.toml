@@ -30,4 +30,5 @@ py-modules = ["agent", "tools", "model", "engine", "schemas", "utils", "settings
 dev-dependencies = [
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
 ]

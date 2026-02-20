@@ -16,12 +16,13 @@ data_gen/instances/
 # debug
 debug/
 
-# uv.lock
-uv.lock
+# lock files (keep uv.lock committed for reproducibility)
 *.lock
+!uv.lock
 
-# memory
+# memory (generated, contains personal data)
 memory/
+local-memory/
 
 # tmp
 tmp_work/

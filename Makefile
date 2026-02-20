@@ -12,24 +12,78 @@ BF16_MEMORY_AGENT_SEARCH_NAME := mem-agent-mlx-bf16
 
 # Help command
 help:
-	@echo "Usage: make <target>"
-	@echo "Targets:"
-	@echo "  1. help - Show this help message"
-	@echo "  2. check-uv - Check if uv is installed and install if needed"
-	@echo "  3. install - Install dependencies using uv"
-	@echo "  4. setup - Choose memory directory via GUI and save to .memory_path"
-	@echo "  5. setup-cli - Choose memory directory via CLI and save to .memory_path"
-	@echo "  6. add-filters - Add filters to .filters"
-	@echo "  7. reset-filters - Reset filters in .filters"
-	@echo "  8. run-agent - Run the agent"
-	@echo "  9. generate-mcp-json - Generate the MCP.json file"
-	@echo "  10. serve-mcp - Serve the MCP server"
-	@echo "  11. chat-cli - Run interactive CLI to chat with the agent"
-	@echo "  12. memory-wizard - Interactive wizard for connecting memory sources"  
-	@echo "  13. connect-memory - Connect memory sources using new connector system"
-	@echo "  14. convert-chatgpt - Convert ChatGPT export (legacy, use convert-memory instead)"
-	@echo "  15. serve-http - Start HTTP server for ChatGPT integration (use with ngrok)"
-	@echo "  16. serve-mcp-http - Start MCP-compliant HTTP server for ChatGPT (recommended)"
+	@echo ""
+	@echo "  Recall — Persistent AI memory without RAG"
+	@echo ""
+	@echo "  QUICK START (pick one path):"
+	@echo "    make quickstart          — no GPU, uses OpenRouter API (set OPENROUTER_API_KEY in .env)"
+	@echo "    make quickstart-local    — macOS/Linux with local model (requires GPU or Apple Silicon)"
+	@echo ""
+	@echo "  ALL TARGETS:"
+	@echo "    check-uv          Install uv if missing"
+	@echo "    install           Install dependencies (+ LM Studio on macOS)"
+	@echo "    install-api       Install dependencies only (skips LM Studio)"
+	@echo "    setup             Choose memory directory (GUI)"
+	@echo "    setup-cli         Choose memory directory (CLI)"
+	@echo "    run-agent         Start local model server (MLX or vLLM)"
+	@echo "    generate-mcp-json Generate mcp.json for Claude Desktop / LM Studio"
+	@echo "    serve-mcp         Start MCP server (stdio)"
+	@echo "    serve-mcp-http    Start MCP server (HTTP, for ChatGPT)"
+	@echo "    chat-cli          Interactive terminal chat"
+	@echo "    memory-wizard     Import memory from ChatGPT, Notion, GitHub, etc."
+	@echo "    connect-memory    Direct connector CLI"
+	@echo "    add-filters       Add privacy filters"
+	@echo "    reset-filters     Clear privacy filters"
+	@echo ""
+
+# ─────────────────────────────────────────────────────────────
+# QUICK START paths
+# ─────────────────────────────────────────────────────────────
+
+# Path A: API-only (no GPU needed — uses OpenRouter)
+quickstart:
+	@echo ""
+	@echo "  Recall — Quick Start (API mode)"
+	@echo ""
+	@echo "  Step 1: Copy .env.example to .env and add your OPENROUTER_API_KEY"
+	@echo "          Get a key at: https://openrouter.ai/keys"
+	@echo ""
+	@if [ ! -f .env ]; then \
+		cp .env.example .env; \
+		echo "  Created .env from .env.example — open it and add your API key, then re-run: make quickstart"; \
+		exit 0; \
+	fi
+	@if ! grep -q "OPENROUTER_API_KEY=." .env 2>/dev/null; then \
+		echo "  OPENROUTER_API_KEY is not set in .env. Open .env and add your key."; \
+		exit 1; \
+	fi
+	@echo "  Step 2: Installing dependencies..."
+	$(MAKE) install-api
+	@echo "  Step 3: Choosing memory directory..."
+	$(MAKE) setup-cli
+	@echo ""
+	@echo "  Done! Start chatting:"
+	@echo "    make chat-cli            — terminal REPL"
+	@echo "    make generate-mcp-json   — then copy mcp.json to Claude Desktop"
+	@echo ""
+
+# Path B: Local model (macOS Apple Silicon or Linux GPU)
+quickstart-local:
+	@echo ""
+	@echo "  Recall — Quick Start (local model)"
+	@echo ""
+	$(MAKE) install
+	$(MAKE) setup-cli
+	$(MAKE) run-agent
+	@echo ""
+	@echo "  Model server running. In a new terminal:"
+	@echo "    make chat-cli            — terminal REPL"
+	@echo "    make generate-mcp-json   — then copy mcp.json to Claude Desktop"
+	@echo ""
+
+# ─────────────────────────────────────────────────────────────
+# SETUP
+# ─────────────────────────────────────────────────────────────
 
 # Check if uv is installed and install if needed
 check-uv:
@@ -42,6 +96,11 @@ check-uv:
 		echo "uv is already installed"; \
 		uv --version; \
 	fi
+
+# Install dependencies using uv (skips LM Studio — use for API-only / CI)
+install-api: check-uv
+	@echo "Installing dependencies with uv (API mode — skipping LM Studio)..."
+	uv sync
 
 # Install dependencies using uv
 install: check-uv
