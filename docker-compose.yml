@@ -1,0 +1,43 @@
+services:
+  # ── MCP server (stdio, always on) ──────────────────────────────────────────
+  recall-mcp:
+    build: .
+    command: python mcp_server/server.py
+    volumes:
+      - ${RECALL_VAULT_PATH:-./memory/mcp-server}:/vault:rw
+      - recall-data:/data
+    env_file:
+      - .env
+    environment:
+      - RECALL_VAULT_PATH=/vault
+      - RECALL_DB_PATH=/data/recall.db
+      - RECALL_KUZU_PATH=/data/graph
+      - MCP_TRANSPORT=stdio
+    restart: unless-stopped
+
+  # ── Worker HTTP API (optional — enable with --profile worker) ──────────────
+  recall-worker:
+    build: .
+    command: python -m worker.app
+    ports:
+      - "${RECALL_WORKER_PORT:-37777}:37777"
+    volumes:
+      - ${RECALL_VAULT_PATH:-./memory/mcp-server}:/vault:rw
+      - recall-data:/data
+    env_file:
+      - .env
+    environment:
+      - RECALL_VAULT_PATH=/vault
+      - RECALL_DB_PATH=/data/recall.db
+      - RECALL_KUZU_PATH=/data/graph
+      - RECALL_WORKER_HOST=0.0.0.0
+      - RECALL_WORKER_PORT=37777
+    restart: unless-stopped
+    profiles:
+      - worker
+    depends_on:
+      - recall-mcp
+
+volumes:
+  recall-data:
+    driver: local

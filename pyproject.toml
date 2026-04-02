@@ -6,16 +6,31 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "agent",
+    "aiosqlite>=0.22.1",
     "mcp-server",
+    "recall-core",
     "rich>=13.7.0",
+    "tenacity>=9.1.4",
+    "watchdog>=6.0.0",
 ]
 
 [tool.uv.workspace]
-members = ["agent", "mcp_server"]
+members = ["agent", "mcp_server", "recall"]
 
 [tool.uv.sources]
 agent = { workspace = true }
 "mcp-server" = { workspace = true }
+recall-core = { workspace = true }
+
+[project.scripts]
+recall = "recall.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["recall", "agent", "mcp_server", "memory_connectors"]
 
 [dependency-groups]
 dev = [

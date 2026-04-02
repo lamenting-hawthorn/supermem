@@ -25,6 +25,18 @@ class ChatGPTHistoryConnector(BaseMemoryConnector):
 
     def extract_data(self, source_path: str) -> Dict[str, Any]:
         """Extract conversations from ChatGPT export."""
+        path = Path(source_path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Source file not found: {source_path}\n"
+                "Hint: Download your ChatGPT export from Settings → Data controls → Export data."
+            )
+        if path.suffix.lower() not in (".zip", ".json"):
+            raise ValueError(
+                f"Unrecognised format '{path.suffix}' for ChatGPT connector.\n"
+                "Supported formats: .zip (ChatGPT export archive), .json (conversations.json).\n"
+                "Hint: Download your export from ChatGPT Settings → Data controls → Export data."
+            )
         print(f"📂 Parsing ChatGPT export from {source_path}")
 
         # Parse the export using our existing parser
@@ -168,6 +180,16 @@ class ChatGPTHistoryConnector(BaseMemoryConnector):
         print(
             f"✅ Generated {total_files} conversation files across {len(topic_conversations)} topics"
         )
+
+        # Index all generated markdown files into Recall storage
+        try:
+            from recall.indexer.vault import VaultIndexer
+            md_paths = list(entities_dir.rglob("*.md"))
+            if md_paths:
+                VaultIndexer.index_paths(md_paths)
+                print(f"🔍 Indexed {len(md_paths)} files into Recall storage")
+        except Exception as e:
+            print(f"⚠️ Could not index files into Recall storage: {e}")
 
     def _generate_user_md(self, user_profile, topic_conversations) -> None:
         """Generate user.md file."""

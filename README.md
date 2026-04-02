@@ -1,434 +1,217 @@
 # Recall
 
-> **Persistent AI memory without RAG** — an agent that navigates your knowledge base like a filesystem, not a vector index.
+> **Persistent AI memory without RAG** — four-tier retrieval that uses an LLM agent only as a last resort, backed by SQLite FTS5, an embedded graph database, and your local markdown vault.
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 
-An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — a **persistent, structured memory** backed by local markdown files. Powered by [driaforall/mem-agent](https://huggingface.co/driaforall/mem-agent), a fine-tuned model purpose-built for memory navigation.
+An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — **persistent, structured memory** backed by SQLite + an optional graph database. The LLM agent is tier 4, not the default path — most queries resolve in milliseconds via full-text search.
 
 ---
 
-## Why Not RAG?
-
-Most AI memory systems use **RAG (Retrieval-Augmented Generation)**: embed your documents as vectors, then retrieve the "most similar" chunks at query time. This works well for large corpora but has a hard ceiling — if the embedding similarity doesn't surface the right chunk, that information is effectively invisible to the model.
-
-**mem-agent takes a different approach:**
-
-| | RAG | mem-agent |
-|---|---|---|
-| **Retrieval** | Embedding similarity (top-k chunks) | Agent navigates the file graph directly |
-| **Memory limit** | Bounded by embedding quality | Technically unlimited — agent can explore any path |
-| **Multi-hop reasoning** | Limited (single retrieval step) | Native (follows [[wikilinks]] across files) |
-| **Write support** | Rarely | First-class — agent reads and writes memory |
-| **Speed** | Fast (one vector lookup) | Slow (multiple LLM calls + file I/O per query) |
-| **Retrieval failures** | Silent (wrong embedding = missed info) | Explicit (agent reports what it couldn't find) |
-
-**The tradeoff is real:** this is slower than RAG. Each query may require several LLM inference calls as the agent reasons about, navigates, and reads your memory. If you need sub-second retrieval over millions of documents, use RAG. If you want an assistant that can genuinely reason about your personal knowledge base and never miss information due to embedding drift, this is for you.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        AI Client                            │
-│           (Claude Desktop / LM Studio / ChatGPT)           │
-└───────────────────────┬─────────────────────────────────────┘
-                        │ MCP (stdio / HTTP / SSE)
-┌───────────────────────▼─────────────────────────────────────┐
-│                    mcp_server/                               │
-│         FastMCP server — exposes memory tool to client      │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────────────┐
-│                      agent/                                  │
-│                                                             │
-│  User query                                                 │
-│      │                                                      │
-│      ▼                                                      │
-│  Agent LLM (mem-agent, MLX/vLLM)                           │
-│      │  generates <think> + <python> blocks                 │
-│      ▼                                                      │
-│  Sandboxed subprocess  ◄──── tools.py (file API)           │
-│      │  path-restricted, 20s timeout                       │
-│      ▼                                                      │
-│  Results fed back → up to 20 tool turns                    │
-│      │                                                      │
-│      ▼                                                      │
-│  Final <reply> returned to client                           │
-└───────────────────────┬─────────────────────────────────────┘
-                        │ read / write
-┌───────────────────────▼─────────────────────────────────────┐
-│                 Memory (local markdown vault)                │
-│                                                             │
-│   memory/                                                   │
-│   ├── user.md              ← root profile + nav links       │
-│   └── entities/                                             │
-│       ├── jane_doe.md      ← [[linked]] from user.md        │
-│       └── acme_corp.md     ← [[linked]] from user.md        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Memory connectors** (separate package) import data from ChatGPT, Notion, Nuclino, GitHub, and Google Docs into the markdown vault before the agent ever runs.
-
----
-
-## Supported Platforms
-
-| Platform | Backend | Requirement |
-|---|---|---|
-| macOS | MLX (Apple Silicon) | LM Studio |
-| Linux | vLLM (GPU) | CUDA GPU |
-| Any OS | OpenRouter API | `OPENROUTER_API_KEY` |
-
----
-
-## Quick Start
-
-> **Requires Python 3.11.** If you don't have it, `uv` will install it automatically.
-
-### Path A — No GPU (OpenRouter API)
-
-The fastest way to get running. No local model server needed.
+## Quick Start (Personal, No GPU)
 
 ```bash
-# 1. Get a free API key at https://openrouter.ai/keys
-# 2. Run:
-make quickstart
-# Copies .env.example → .env, prompts you to add your API key,
-# installs deps, and sets up your memory directory.
+pip install recall
 
-# 3. Start chatting:
-make chat-cli
+# Point Recall at a directory of markdown files
+export RECALL_VAULT_PATH=~/notes
+export RECALL_LLM_PROVIDER=openrouter
+export OPENROUTER_API_KEY=your_key_here
+
+# Start the MCP server (add to Claude Desktop's mcp.json)
+recall serve
 ```
 
-### Path B — Local model (Apple Silicon / Linux GPU)
-
-Fully private — no data leaves your machine.
-
-```bash
-make quickstart-local
-# Installs deps + LM Studio, sets up memory, starts the model server.
-# Prompts for model precision (4-bit recommended to start).
-```
-
-### Connect to your AI client
-
-**Claude Desktop:**
-```bash
-make generate-mcp-json
-# Copy mcp.json → ~/.config/claude/claude_desktop.json
-# Restart Claude Desktop
-```
-
-**LM Studio:**
-```bash
-make generate-mcp-json
-# Copy mcp.json to LM Studio's mcp.json location
-# See: https://lmstudio.ai/docs/app/plugins/mcp
-```
-
-**Claude Code (terminal):**
-```bash
-claude mcp add mem-agent \
-  --env MEMORY_DIR="/path/to/your/memory" \
-  -- python "/path/to/mcp_server/server.py"
-
-claude mcp list  # verify it appears
-```
-
-**ChatGPT:**
-```bash
-make serve-mcp-http          # FastAPI on :8081
-# In another terminal:
-ngrok http 8081
-# Add https://your-ngrok-url.ngrok.io/mcp to ChatGPT → Settings → Connectors
+Add to Claude Desktop `mcp.json`:
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall",
+      "args": ["serve"]
+    }
+  }
+}
 ```
 
 ---
 
-## Memory Structure
+## Quick Start (Production with Docker)
 
-The agent navigates an **Obsidian-style** markdown vault with wikilinks:
+```bash
+# Clone and configure
+git clone https://github.com/firstbatchxyz/mem-agent-mcp
+cp .env.example .env
+# Edit .env: set RECALL_VAULT_PATH, RECALL_LLM_PROVIDER, API keys
+
+# MCP server only (stdio, for Claude Desktop)
+docker compose up recall-mcp
+
+# MCP server + HTTP dashboard
+docker compose --profile worker up
+
+# Dashboard at http://localhost:37777
+```
+
+---
+
+## Architecture: Four-Tier Retrieval
+
+Every query goes through tiers in order, short-circuiting when enough results are found. Tiers 1–3 never call an LLM.
 
 ```
-memory/
-├── user.md              # Root — your profile and all entity links
-└── entities/
-    ├── jane_doe.md      # Linked from user.md as [[entities/jane_doe]]
-    └── acme_corp.md
+Query
+  │
+  ├─ Tier 1: SQLite FTS5 full-text search          ~1ms    always available
+  │          porter tokenizer, WAL mode
+  │
+  ├─ Tier 2: Kuzu embedded graph expansion         ~5ms    optional (install kuzu)
+  │          BFS traversal via [[wikilink]] edges
+  │
+  ├─ Tier 3: ChromaDB vector similarity            ~50ms   optional (RECALL_VECTOR=true)
+  │          sentence-transformer embeddings
+  │
+  └─ Tier 4: LLM agent fallback                   ~5-30s  always available
+             navigates vault via Python sandbox
 ```
 
-**user.md** example:
+**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–4 are skipped entirely. Unavailable tiers are skipped with a WARNING log — no errors raised.
+
+---
+
+## MCP Tool Reference
+
+| Tool | Parameters | Returns | Notes |
+|------|-----------|---------|-------|
+| `use_memory_agent` | `query: str` | Formatted answer | Backward-compatible. Routes through all 4 tiers; falls back to full agent only if tiers 1–3 insufficient |
+| `recall_hybrid` | `query: str`, `tier_limit: int = 4` | JSON with `obs_ids`, `source_tier`, `latency_ms` | Preferred for programmatic use. Token-efficient — returns IDs first |
+| `get_observations` | `ids: list[int]` | JSON array of observation dicts | Fetch full content for specific IDs |
+| `get_timeline` | `obs_id: int`, `window: int = 5` | JSON array of chronological observations | Context around a specific observation |
+
+### Progressive Disclosure Pattern
+
+```python
+# 1. Search — cheap, returns IDs only
+result = await recall_hybrid("Alice's project status", tier_limit=2)
+# {"obs_ids": [42, 17, 88], "source_tier": 1, "latency_ms": 2.1}
+
+# 2. Fetch — only for IDs you actually need
+obs = await get_observations([42, 17])
+# [{"id": 42, "content": "...", "tier_used": 1}, ...]
+
+# 3. Timeline — context around interesting observations  
+ctx = await get_timeline(42, window=3)
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECALL_LLM_PROVIDER` | `openrouter` | `openrouter` \| `ollama` \| `vllm` \| `claude` \| `lmstudio` |
+| `RECALL_LLM_MODEL` | provider default | Model string (e.g. `openai/gpt-4o-mini`, `llama3`) |
+| `RECALL_DB_PATH` | `~/.recall/recall.db` | SQLite database path |
+| `RECALL_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
+| `RECALL_VECTOR` | `false` | Set `true` to enable ChromaDB tier |
+| `RECALL_API_KEY` | _(none)_ | Bearer token for HTTP API auth (disabled if unset) |
+| `RECALL_RATE_LIMIT` | `60` | Requests/minute limit |
+| `RECALL_WORKER_PORT` | `37777` | HTTP dashboard port |
+| `RECALL_COMPRESS_EVERY` | `50` | Observations written before LLM compression |
+| `OPENROUTER_API_KEY` | _(required for openrouter)_ | OpenRouter API key |
+| `ANTHROPIC_API_KEY` | _(required for claude)_ | Anthropic API key |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `VLLM_HOST` / `VLLM_PORT` | `localhost` / `8000` | vLLM server address |
+| `LMSTUDIO_HOST` | `http://localhost:1234` | LM Studio server URL |
+
+---
+
+## Connector Guide
+
+Import external data into your vault with one command:
+
+```bash
+# ChatGPT export (Settings → Data controls → Export data → .zip)
+recall connect chatgpt ~/Downloads/chatgpt_export.zip
+
+# Notion workspace export (.zip)
+recall connect notion ~/Downloads/notion_export.zip
+
+# Nuclino workspace export (.zip)
+recall connect nuclino ~/Downloads/nuclino_export.zip
+
+# GitHub repositories (live via API)
+recall connect github owner/repo1,owner/repo2 --token ghp_xxx
+
+# Google Docs (OAuth, opens browser)
+recall connect google_docs "My Doc Name"
+```
+
+All connectors write markdown to your vault, then automatically index the files into SQLite + graph. Private content wrapped in `<private>...</private>` tags is stripped before indexing.
+
+---
+
+## CLI Reference
+
+```bash
+recall serve            # Start MCP server (stdio transport, for Claude Desktop)
+recall serve --worker   # Start MCP server + HTTP dashboard on :37777
+recall chat             # Interactive terminal REPL (no client required)
+recall backup           # Create timestamped .tar.gz (vault + SQLite)
+recall backup --output /path/to/archive.tar.gz
+recall restore <archive.tar.gz>
+recall connect <type> <source> [--token TOKEN] [--max-items N]
+```
+
+---
+
+## HTTP Dashboard (Optional)
+
+Start with `recall serve --worker` or `docker compose --profile worker up`.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | `{"status":"ok","db":true,"graph":false,"vector":false}` |
+| `/sessions` | GET | Paginated session list with summaries |
+| `/observations` | GET | Filter by session/date/type |
+| `/search` | POST | `{"query": "...", "tier_limit": 4}` |
+| `/index/rebuild` | POST | Reindex entire vault |
+| `/backup` | GET | Streams vault + DB as `.tar.gz` |
+| `/stats` | GET | `{obs_count, entity_count, session_count, db_size_mb}` |
+
+Auth: `Authorization: Bearer <RECALL_API_KEY>`. Disabled when env var is unset.
+
+---
+
+## Privacy
+
+Wrap sensitive content in `<private>...</private>` tags. It is stripped before writing to any storage layer (SQLite, Kuzu, ChromaDB). The content passes through to the agent sandbox only — it never persists.
+
 ```markdown
-# User Information
-- user_name: John Doe
-- birth_date: 1990-01-01
-- living_location: Enschede, Netherlands
+# Meeting Notes
 
-## User Relationships
-- company: [[entities/acme_corp.md]]
-- mother: [[entities/jane_doe.md]]
+Alice discussed the roadmap.
+<private>Budget: $2.4M approved for Q3</private>
+Next steps: ship v2 by June.
 ```
-
-**Entity file** example:
-```markdown
-# Jane Doe
-- relationship: Mother
-- birth_date: 1965-01-01
-- birth_location: New York, USA
-```
-
-The agent can follow `[[wikilinks]]` across files, enabling multi-hop reasoning: *"What city does John's mother live in?"* → reads `user.md` → follows link → reads `jane_doe.md` → answers.
-
-> Modifying memory files manually does not require restarting the MCP server.
-
----
-
-## Importing Existing Data
-
-The fastest way to populate memory from real data:
-
-```bash
-make memory-wizard   # interactive setup for any connector
-```
-
-### Available Connectors
-
-| Connector | Source | Method |
-|---|---|---|
-| `chatgpt` | ChatGPT export `.zip` | Offline export |
-| `notion` | Notion export `.zip` | Offline export |
-| `nuclino` | Nuclino export `.zip` | Offline export |
-| `github` | GitHub API | Live (token) |
-| `google-docs` | Google Drive | Live (OAuth 2.0) |
-
-### ChatGPT History
-
-1. Go to [ChatGPT Settings → Data Controls](https://chatgpt.com/settings/data-controls) → Export data
-2. Wait for the email, download the ZIP
-3. Run:
-
-```bash
-make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip
-
-# With AI-powered categorization (semantic, requires LM Studio):
-python memory_connectors/memory_connect.py chatgpt /path/to/export.zip \
-  --method ai --embedding-model lmstudio
-
-# Limit scope for testing:
-make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip MAX_ITEMS=100
-```
-
-### Notion
-
-1. Notion workspace settings → Export content → Markdown & CSV → Export all
-2. Run:
-
-```bash
-make connect-memory CONNECTOR=notion SOURCE=/path/to/notion-export.zip
-```
-
-### Nuclino
-
-1. Workspace menu (☰) → ⋮ → Workspace settings → Export Workspace
-2. Run:
-
-```bash
-make connect-memory CONNECTOR=nuclino SOURCE=/path/to/nuclino-export.zip
-```
-
-### GitHub (live)
-
-```bash
-# Single repo
-make connect-memory CONNECTOR=github SOURCE="owner/repo" TOKEN=your_github_token
-
-# Multiple repos
-make connect-memory CONNECTOR=github SOURCE="owner/repo1,owner/repo2" TOKEN=your_token
-
-# With content type control
-python memory_connectors/memory_connect.py github "owner/repo" \
-  --include-issues --include-prs --include-wiki --token your_token
-```
-
-Get a token: [GitHub Settings → Tokens](https://github.com/settings/tokens) → `public_repo` scope for public repos, `repo` for private.
-
-### Google Docs (live)
-
-```bash
-make connect-memory CONNECTOR=google-docs SOURCE="folder_id" TOKEN=your_access_token
-```
-
-Get an access token via [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground/) (select `Drive API v3 → drive.readonly`).
-
-Find folder ID from URL: `https://drive.google.com/drive/folders/`**`1ABC123DEF456`** ← that's the ID.
-
----
-
-## Privacy Filters
-
-The agent accepts `<filter>` tags to redact specific information from responses:
-
-```
-What's my mother's age? <filter> 1. Do not reveal explicit age information </filter>
-```
-
-Manage filters via:
-```bash
-make add-filters    # add filters interactively
-make reset-filters  # clear all filters
-```
-
-Changes take effect immediately without restarting the server.
 
 ---
 
 ## Running Tests
 
 ```bash
-# Install dev dependencies
-uv sync
-
-# Run all tests
-uv run pytest tests/ -v
-
-# Run a specific test file
-uv run pytest tests/test_tools.py -v
-
-# Run with coverage
-uv run pytest tests/ --cov=agent --cov-report=term-missing
+uv run pytest tests/ -v                          # all tests
+uv run pytest tests/unit/ -v                     # unit only (fast, no network)
+uv run pytest tests/integration/ -v              # integration (real storage)
+uv run pytest tests/ --cov=recall --cov-report=term-missing  # with coverage
 ```
 
----
-
-## Development
-
-### Project Structure
-
-```
-mem-agent-mcp/
-├── agent/                   # Core agent package
-│   ├── agent.py             # Agent class + conversation loop
-│   ├── engine.py            # Sandboxed subprocess executor
-│   ├── model.py             # LLM client (OpenRouter/vLLM)
-│   ├── tools.py             # File operation API for the agent
-│   ├── schemas.py           # Pydantic models
-│   ├── settings.py          # Environment config
-│   ├── utils.py             # Helpers (prompt loading, parsing)
-│   └── system_prompt.txt    # Agent behavior spec
-├── mcp_server/              # FastMCP server wrappers
-│   ├── server.py            # stdio transport (Claude Desktop)
-│   ├── mcp_http_server.py   # HTTP transport (ChatGPT)
-│   ├── mcp_sse_server.py    # SSE transport
-│   └── scripts/             # Setup utilities
-├── memory_connectors/       # Data import plugin system
-│   ├── base.py              # Abstract connector interface
-│   ├── chatgpt_history/
-│   ├── notion/
-│   ├── nuclino/
-│   ├── github_live/
-│   ├── google_docs_live/
-│   ├── memory_connect.py    # CLI router
-│   └── memory_wizard.py     # Interactive wizard
-├── memories/                # Sample memory packs (healthcare, client_success)
-├── examples/
-│   └── mem_agent_cli.py     # Interactive CLI demo
-├── tests/                   # pytest test suite
-└── chat_cli.py              # Rich-formatted terminal REPL
-```
-
-### Adding a New Memory Connector
-
-1. Create a directory under `memory_connectors/`
-2. Implement a class inheriting `BaseMemoryConnector`:
-
-```python
-from memory_connectors.base import BaseMemoryConnector
-from typing import Dict, Any
-
-class MyServiceConnector(BaseMemoryConnector):
-    @property
-    def connector_name(self) -> str:
-        return "My Service"
-
-    @property
-    def supported_formats(self) -> list:
-        return ['.zip', '.json']
-
-    def extract_data(self, source_path: str) -> Dict[str, Any]:
-        # Parse the source data into a flat dict
-        ...
-
-    def organize_data(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
-        # Group/categorize by topic
-        ...
-
-    def generate_memory_files(self, organized_data: Dict[str, Any]) -> None:
-        # Write Obsidian-style markdown files
-        ...
-```
-
-3. Register it in `memory_connectors/memory_connect.py`
-4. Add usage examples to this README
-
-### Sandbox Security
-
-All agent-generated Python code runs in a **separate subprocess** (`agent/engine.py`) with:
-- Working directory locked to the configured memory path
-- `open()`, `os.remove()`, `os.rename()` wrapped to deny paths outside memory root
-- Configurable builtin blacklist (exec, eval, etc.)
-- 20-second hard timeout
-- Only picklable results returned to the main process
-
-### Environment Variables
-
-Copy `.env.example` to `.env` and fill in what you need:
-
-```bash
-cp .env.example .env
-```
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `OPENROUTER_API_KEY` | Cloud LLM (Path A) | — |
-| `MEMORY_DIR` | Override memory directory | from `.memory_path` |
-| `VLLM_HOST` / `VLLM_PORT` | vLLM server (Linux) | `0.0.0.0:8000` |
-| `FASTMCP_LOG_LEVEL` | Log verbosity | `INFO` |
-| `MCP_TRANSPORT` | `stdio` / `http` / `sse` | `stdio` |
-
-`.env` is gitignored — it will never be committed.
-
----
-
-## Troubleshooting
-
-**Agent gives generic responses instead of using memory:**
-- Confirm memory files exist at the configured path
-- Check that `user.md` has proper topic links
-- Enable debug logging: `FASTMCP_LOG_LEVEL=DEBUG make serve-mcp`
-- Check logs at `~/Library/Logs/Claude/mcp-server-memory-agent-stdio.log` (macOS)
-
-**MCP connection issues:**
-- Verify `~/.config/claude/claude_desktop.json` has the correct paths
-- Ensure the LM Studio / vLLM server is running before starting the MCP server
-- On LM Studio, try changing model name in `.mlx_model_name` from `mem-agent-mlx-4bit` to `mem-agent-mlx@4bit`
-
-**Memory import failures:**
-- Check that the export format is supported
-- Try `--max-items 10` to limit scope and confirm the connector works
-- Verify file permissions on the output directory
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and how to submit pull requests.
+Coverage gate: 60% (CI enforced). Kuzu and Anthropic tests are auto-skipped if packages are not installed.
 
 ---
 
 ## License
 
-[Apache 2.0](LICENSE) — © Recall contributors
+Apache 2.0 — see [LICENSE](LICENSE).

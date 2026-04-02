@@ -4,10 +4,23 @@ GitHub Live Connector - Direct API integration for GitHub repositories.
 
 import os
 import json
+import time
 import requests
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    _HAS_TENACITY = True
+except ImportError:
+    _HAS_TENACITY = False
+
+try:
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    _HAS_RICH = True
+except ImportError:
+    _HAS_RICH = False
 
 from ..base import BaseMemoryConnector
 
@@ -71,21 +84,38 @@ class GitHubLiveConnector(BaseMemoryConnector):
 
         all_data = {"repositories": [], "total_items": 0}
 
-        for repo in repositories:
-            repo = repo.strip()
-            print(f"📂 Processing repository: {repo}")
+        if _HAS_RICH:
+            progress_ctx = Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn())
+            task_id = None
+        else:
+            progress_ctx = None
 
-            try:
-                repo_data = self._fetch_repository_data(repo)
-                all_data["repositories"].append(repo_data)
-                all_data["total_items"] += repo_data.get("item_count", 0)
-            except UnicodeEncodeError as e:
-                print(f"⚠️ Unicode encoding error for {repo}: {e}")
-                print(f"   This may be due to special characters in repository content")
-                continue
-            except Exception as e:
-                print(f"⚠️ Error fetching {repo}: {e}")
-                continue
+        def _process_repos() -> None:
+            for repo in repositories:
+                repo_stripped = repo.strip()
+                desc = f"📂 {repo_stripped}"
+                if _HAS_RICH and progress_ctx is not None:
+                    progress_ctx.update(task_id, description=desc)  # type: ignore[arg-type]
+                else:
+                    print(f"📂 Processing repository: {repo_stripped}")
+                try:
+                    repo_data = self._fetch_repository_data(repo_stripped)
+                    all_data["repositories"].append(repo_data)
+                    all_data["total_items"] += repo_data.get("item_count", 0)
+                except UnicodeEncodeError as e:
+                    print(f"⚠️ Unicode encoding error for {repo_stripped}: {e}")
+                    print(f"   This may be due to special characters in repository content")
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Error fetching {repo_stripped}: {e}")
+                    continue
+
+        if _HAS_RICH and progress_ctx is not None:
+            with progress_ctx:
+                task_id = progress_ctx.add_task("Starting...", total=len(repositories))
+                _process_repos()
+        else:
+            _process_repos()
 
         return all_data
 
@@ -170,43 +200,71 @@ class GitHubLiveConnector(BaseMemoryConnector):
 
         return repo_data
 
+    # 1 req/s rate limit guard — shared across calls in the same connector instance
+    _last_api_call_time: float = 0.0
+
+    def _rate_limit_sleep(self) -> None:
+        """Enforce 1 req/s to stay within GitHub unauthenticated rate limits."""
+        elapsed = time.monotonic() - self._last_api_call_time
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+        self._last_api_call_time = time.monotonic()
+
     def _github_api_call(
-        self, endpoint: str, params: Optional[Dict] = None
+        self, endpoint: str, params: Optional[Dict] = None, _attempt: int = 0
     ) -> Optional[Dict]:
-        """Make a GitHub API call with error handling."""
+        """Make a GitHub API call with retry + rate limiting."""
         url = f"https://api.github.com{endpoint}"
+        self._rate_limit_sleep()
+        max_retries = 3
 
         try:
-            response = requests.get(url, headers=self.headers, params=params or {})
+            response = requests.get(url, headers=self.headers, params=params or {}, timeout=30)
 
-            # Handle rate limiting
-            if response.status_code == 403 and "rate limit" in response.text.lower():
-                print(
-                    f"⚠️ GitHub API rate limit exceeded. Try again later or provide a token."
-                )
+            # Handle rate limiting — back off and retry
+            if response.status_code == 429 or (
+                response.status_code == 403 and "rate limit" in response.text.lower()
+            ):
+                retry_after = int(response.headers.get("Retry-After", 60))
+                if _attempt < max_retries:
+                    print(f"⚠️ GitHub rate limit hit — waiting {retry_after}s before retry {_attempt + 1}/{max_retries}")
+                    time.sleep(retry_after)
+                    return self._github_api_call(endpoint, params, _attempt + 1)
+                print("⚠️ GitHub API rate limit exceeded. Provide a token to increase limits.")
                 return None
+
+            # Transient server errors — retry with backoff
+            if response.status_code in (500, 502, 503, 504) and _attempt < max_retries:
+                wait = 2 ** _attempt
+                print(f"⚠️ GitHub API transient error {response.status_code} — retrying in {wait}s")
+                time.sleep(wait)
+                return self._github_api_call(endpoint, params, _attempt + 1)
 
             # Handle authentication issues
             if response.status_code == 401:
-                print(
-                    f"⚠️ GitHub API authentication failed. Check your token permissions."
-                )
+                print("⚠️ GitHub API authentication failed. Check your token permissions.")
                 return None
 
             # Handle not found - only print for main repo check, not for optional resources
             if response.status_code == 404:
-                if (
-                    "/repos/" in endpoint and endpoint.count("/") == 2
-                ):  # Main repo endpoint
+                if "/repos/" in endpoint and endpoint.count("/") == 2:
                     print(f"⚠️ Repository not found: {endpoint}")
                 return None
 
             response.raise_for_status()
             return response.json()
 
+        except requests.exceptions.Timeout:
+            if _attempt < max_retries:
+                wait = 2 ** _attempt
+                print(f"⚠️ GitHub API request timed out — retrying in {wait}s ({_attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                return self._github_api_call(endpoint, params, _attempt + 1)
+            print(f"⚠️ GitHub API request timed out after {max_retries} retries: {endpoint}")
+            return None
+
         except requests.exceptions.RequestException as e:
-            # Only show detailed errors for important endpoints
-            if "/repos/" in endpoint and endpoint.count("/") == 2:  # Main repo endpoint
+            if "/repos/" in endpoint and endpoint.count("/") == 2:
                 print(f"⚠️ API call failed for {endpoint}: {e}")
             return None
 
@@ -697,6 +755,20 @@ class GitHubLiveConnector(BaseMemoryConnector):
         self._update_user_profile(memory_dir, organized_data)
 
         print(f"✅ Generated {item_counter} memory files for GitHub repositories")
+
+        # Index all generated markdown files into SQLite + graph
+        self._index_generated_files(entities_dir)
+
+    def _index_generated_files(self, root_dir: Path) -> None:
+        """Index all generated .md files into the Recall storage layer."""
+        try:
+            from recall.indexer.vault import VaultIndexer
+            md_paths = list(root_dir.rglob("*.md"))
+            if md_paths:
+                VaultIndexer.index_paths(md_paths)
+                print(f"🔍 Indexed {len(md_paths)} files into Recall storage")
+        except Exception as e:
+            print(f"⚠️ Could not index files into Recall storage: {e}")
 
     def _generate_index_file(
         self, entities_dir: Path, organized_data: Dict[str, Any]

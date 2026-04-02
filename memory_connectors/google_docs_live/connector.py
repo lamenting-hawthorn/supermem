@@ -367,6 +367,16 @@ class GoogleDocsLiveConnector(BaseMemoryConnector):
 
         print(f"✅ Generated {doc_counter} memory files for Google Docs")
 
+        # Index all generated markdown files into Recall storage
+        try:
+            from recall.indexer.vault import VaultIndexer
+            md_paths = list(entities_dir.rglob("*.md"))
+            if md_paths:
+                VaultIndexer.index_paths(md_paths)
+                print(f"🔍 Indexed {len(md_paths)} files into Recall storage")
+        except Exception as e:
+            print(f"⚠️ Could not index files into Recall storage: {e}")
+
     def _generate_index_file(
         self, entities_dir: Path, organized_data: Dict[str, Any]
     ) -> None:

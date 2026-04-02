@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recall Memory Browser</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0f0f10; color: #d3d1c7; min-height: 100vh; }
+  header { background: #1a1a1d; border-bottom: 1px solid #2a2a2e;
+           padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 18px; font-weight: 600; color: #9dcfb1; }
+  #status { font-size: 12px; color: #6b6b70; }
+  #status.ok { color: #5dba8c; }
+  #status.degraded { color: #e08f3c; }
+  main { display: grid; grid-template-columns: 320px 1fr; gap: 0; height: calc(100vh - 52px); }
+  aside { background: #141416; border-right: 1px solid #2a2a2e;
+          overflow-y: auto; padding: 16px; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+             color: #6b6b70; margin-bottom: 12px; }
+  .session-item { padding: 10px 12px; border-radius: 6px; margin-bottom: 8px;
+                  background: #1a1a1d; cursor: pointer; border: 1px solid transparent; }
+  .session-item:hover, .session-item.active { border-color: #3c3c9e; background: #1e1e32; }
+  .session-item .sid { font-size: 11px; color: #5c5cb4; font-weight: 600; }
+  .session-item .summary { font-size: 12px; color: #9b9990; margin-top: 4px;
+                            display: -webkit-box; -webkit-line-clamp: 2;
+                            -webkit-box-orient: vertical; overflow: hidden; }
+  .session-item .meta { font-size: 11px; color: #55554f; margin-top: 4px; }
+  #content { display: flex; flex-direction: column; overflow: hidden; }
+  #search-bar { padding: 16px 20px; background: #141416; border-bottom: 1px solid #2a2a2e;
+                display: flex; gap: 10px; }
+  #search-input { flex: 1; background: #1a1a1d; border: 1px solid #2a2a2e; border-radius: 6px;
+                  padding: 8px 12px; color: #d3d1c7; font-size: 14px; outline: none; }
+  #search-input:focus { border-color: #5c5cb4; }
+  #search-btn { background: #3c3c9e; border: none; border-radius: 6px; padding: 8px 16px;
+                color: #c8c5f5; font-size: 13px; cursor: pointer; }
+  #search-btn:hover { background: #4e4ec8; }
+  #tier-select { background: #1a1a1d; border: 1px solid #2a2a2e; border-radius: 6px;
+                 padding: 8px 10px; color: #9b9990; font-size: 13px; }
+  #obs-list { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .obs-card { background: #1a1a1d; border-radius: 8px; padding: 14px 16px;
+              margin-bottom: 12px; border-left: 3px solid #2a2a2e; }
+  .obs-card.tier-1 { border-left-color: #1d9e75; }
+  .obs-card.tier-2 { border-left-color: #e08f3c; }
+  .obs-card.tier-3 { border-left-color: #3a7fc1; }
+  .obs-card.tier-4 { border-left-color: #9c4a2a; }
+  .obs-meta { font-size: 11px; color: #55554f; margin-bottom: 8px; }
+  .obs-content { font-size: 13px; line-height: 1.6; color: #b5b3a9;
+                 white-space: pre-wrap; word-break: break-word; }
+  .tier-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 6px;
+                border-radius: 4px; margin-left: 8px; text-transform: uppercase; }
+  .tier-1 .tier-badge { background: #0d3d28; color: #5dba8c; }
+  .tier-2 .tier-badge { background: #3d2800; color: #e08f3c; }
+  .tier-3 .tier-badge { background: #0d2540; color: #5a9fd4; }
+  .tier-4 .tier-badge { background: #3d1a0d; color: #e07050; }
+  #empty { text-align: center; padding: 60px 20px; color: #55554f; }
+  #empty p { margin-top: 8px; font-size: 13px; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Recall</h1>
+  <span id="status">connecting&hellip;</span>
+</header>
+<main>
+  <aside>
+    <h2>Sessions</h2>
+    <div id="sessions-list"><div style="color:#55554f;font-size:12px">Loading&hellip;</div></div>
+  </aside>
+  <section id="content">
+    <div id="search-bar">
+      <input id="search-input" type="text" placeholder="Search memory&hellip;" />
+      <select id="tier-select">
+        <option value="4">All tiers</option>
+        <option value="1">FTS5 only</option>
+        <option value="2">+ graph</option>
+        <option value="3">+ vector</option>
+      </select>
+      <button id="search-btn">Search</button>
+    </div>
+    <div id="obs-list">
+      <div id="empty"><div style="font-size:32px">&#128269;</div><p>Search memory or select a session.</p></div>
+    </div>
+  </section>
+</main>
+<script>
+const TIER_LABELS = {1:'FTS5',2:'Graph',3:'Vector',4:'Agent'};
+let currentSession = null;
+
+async function apiFetch(path, opts={}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function loadHealth() {
+  try {
+    const h = await apiFetch('/health');
+    const el = document.getElementById('status');
+    el.textContent = h.status === 'ok' ? '\u25cf online' : '\u26a0 degraded';
+    el.className = h.status;
+  } catch { document.getElementById('status').textContent = '\u2715 offline'; }
+}
+
+async function loadSessions() {
+  try {
+    const sessions = await apiFetch('/sessions?limit=30');
+    const el = document.getElementById('sessions-list');
+    if (!sessions.length) { el.innerHTML = '<div style="color:#55554f;font-size:12px">No sessions yet.</div>'; return; }
+    el.innerHTML = sessions.map(s => `
+      <div class="session-item" data-id="${s.id}" onclick="selectSession(${s.id})">
+        <div class="sid">#${s.id} \u2014 ${s.obs_count} obs</div>
+        <div class="summary">${s.summary || '<em style="color:#55554f">no summary</em>'}</div>
+        <div class="meta">${new Date(s.started_at*1000).toLocaleString()}</div>
+      </div>`).join('');
+  } catch(e) { console.error(e); }
+}
+
+async function selectSession(id) {
+  currentSession = id;
+  document.querySelectorAll('.session-item').forEach(el =>
+    el.classList.toggle('active', parseInt(el.dataset.id) === id));
+  const obs = await apiFetch(`/observations?session_id=${id}&limit=100`);
+  renderObs(obs, null);
+}
+
+function renderObs(obs, tierNum) {
+  const el = document.getElementById('obs-list');
+  if (!obs.length) { el.innerHTML = '<div id="empty"><div style="font-size:32px">&#128461;</div><p>No observations found.</p></div>'; return; }
+  el.innerHTML = obs.map(o => {
+    const t = o.tier_used || tierNum || 0;
+    const badge = t ? `<span class="tier-badge">${TIER_LABELS[t]||t}</span>` : '';
+    const ts = o.created_at ? new Date(o.created_at*1000).toLocaleTimeString() : '';
+    return `<div class="obs-card tier-${t}">
+      <div class="obs-meta">id:${o.id} \u00b7 ${ts} \u00b7 ${o.type||'obs'} ${badge}</div>
+      <div class="obs-content">${escHtml(o.content||'')}</div>
+    </div>`;
+  }).join('');
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const tier = parseInt(document.getElementById('tier-select').value);
+  const result = await apiFetch('/search', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({query: q, tier_limit: tier})
+  });
+  renderObs(result.observations.map(o => ({...o, tier_used: result.source_tier})), result.source_tier);
+}
+
+document.getElementById('search-btn').addEventListener('click', doSearch);
+document.getElementById('search-input').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
+
+loadHealth();
+loadSessions();
+setInterval(loadHealth, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[project]
+name = "recall-core"
+version = "0.1.0"
+description = "Recall v2 core — ABCs, errors, logging, config"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "structlog>=24.0.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+storage = [
+    "kuzu>=0.6.0",
+    "watchdog>=4.0.0",
+    "aiosqlite>=0.20.0",
+]
+vector = [
+    "chromadb>=0.4.0",
+    "sentence-transformers>=3.0.0",
+]
+worker = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "sse-starlette>=2.0.0",
+]
+llm = [
+    "anthropic>=0.30.0",
+    "openai>=1.30.0",
+    "httpx>=0.27.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["recall"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
