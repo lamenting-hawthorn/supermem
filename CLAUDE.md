@@ -149,3 +149,21 @@ Auth: `Authorization: Bearer <RECALL_API_KEY>` header; disabled when env var uns
 - **Env vars**: see `.env.example` — OPENROUTER_API_KEY, VLLM_HOST/PORT, LOG_LEVEL, MCP_TRANSPORT; v2 adds RECALL_VAULT_PATH, RECALL_DB_PATH, RECALL_WORKER_PORT (default 37777), RECALL_API_KEY
 - **Remotes**: `origin` = fork (`lamenting-hawthorn/recall`), `upstream` = `firstbatchxyz/mem-agent-mcp`
 - **Docker**: `docker-compose.yml` + `Dockerfile` available for containerized deployment
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
