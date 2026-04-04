@@ -60,11 +60,11 @@ log = get_logger(__name__)
 
 @dataclasses.dataclass
 class ServerContext:
-    db: Any = None           # DatabaseManager
-    graph: Any = None        # KuzuGraphManager
-    chroma: Any = None       # ChromaManager
-    retriever: Any = None    # HybridRetriever
-    capture: Any = None      # ObservationCapture
+    db: Any = None  # DatabaseManager
+    graph: Any = None  # KuzuGraphManager
+    chroma: Any = None  # ChromaManager
+    retriever: Any = None  # HybridRetriever
+    capture: Any = None  # ObservationCapture
     session_mgr: Any = None  # SessionManager
     session_id: int = -1
     model_client: Any = None  # BaseModelClient (None in personal mode)
@@ -264,7 +264,9 @@ async def recall_hybrid(
     try:
         result = await _ctx.retriever.search(query=query, tier_limit=tier_limit)
         obs_list = (
-            await _ctx.retriever.get_observations(result.obs_ids) if result.obs_ids else []
+            await _ctx.retriever.get_observations(result.obs_ids)
+            if result.obs_ids
+            else []
         )
 
         payload = {

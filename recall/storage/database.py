@@ -348,7 +348,7 @@ class DatabaseManager(BaseStorage):
         for name in entity_names:
             # FTS5 phrase match — index-accelerated vs instr() full scan
             async with self._conn.execute(
-                'SELECT obs_id FROM content_fts WHERE content_fts MATCH ? LIMIT 20',
+                "SELECT obs_id FROM content_fts WHERE content_fts MATCH ? LIMIT 20",
                 (f'"{name}"',),
             ) as cur:
                 rows = await cur.fetchall()

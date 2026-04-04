@@ -31,6 +31,7 @@ from recall.core.retriever import RetrievalResult
 # 1. Pure helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCheckRate:
     """Token-bucket rate limiter."""
 
@@ -146,6 +147,7 @@ class TestAuthOk:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. MCP tool handlers (monkeypatched globals)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestRecallHybridTool:
     """recall_hybrid() tool handler."""
@@ -267,6 +269,7 @@ class TestGetObservationsTool:
 # 3. HTTP endpoint tests (FastAPI TestClient)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestHTTPServer:
     """http_server.py — REST wrapper endpoints."""
 
@@ -274,6 +277,7 @@ class TestHTTPServer:
     def client(self):
         from fastapi.testclient import TestClient
         from mcp_server.http_server import create_app
+
         app = create_app()
         return TestClient(app)
 
@@ -307,12 +311,14 @@ class TestHTTPServer:
 # 4. JSON-RPC MCP handler tests (mcp_http_server.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestMCPJsonRPC:
     """mcp_http_server.py — JSON-RPC protocol handler."""
 
     @pytest.fixture
     def server(self):
         from mcp_server.mcp_http_server import MCPServer
+
         return MCPServer()
 
     @pytest.mark.asyncio
@@ -336,7 +342,8 @@ class TestMCPJsonRPC:
     @pytest.mark.asyncio
     async def test_tools_call_missing_question(self, server):
         req = {
-            "jsonrpc": "2.0", "id": 3,
+            "jsonrpc": "2.0",
+            "id": 3,
             "method": "tools/call",
             "params": {"name": "use_memory_agent", "arguments": {}},
         }
@@ -347,7 +354,8 @@ class TestMCPJsonRPC:
     @pytest.mark.asyncio
     async def test_unknown_tool(self, server):
         req = {
-            "jsonrpc": "2.0", "id": 4,
+            "jsonrpc": "2.0",
+            "id": 4,
             "method": "tools/call",
             "params": {"name": "nonexistent_tool", "arguments": {}},
         }
@@ -367,6 +375,7 @@ class TestMCPJsonRPC:
 # 5. MCP HTTP server endpoints (mcp_http_server.py TestClient)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestMCPHTTPEndpoints:
     """Test actual HTTP routes in mcp_http_server.py."""
 
@@ -374,6 +383,7 @@ class TestMCPHTTPEndpoints:
     def client(self):
         from fastapi.testclient import TestClient
         from mcp_server.mcp_http_server import create_app
+
         app = create_app()
         return TestClient(app)
 
@@ -406,27 +416,29 @@ class TestMCPHTTPEndpoints:
         assert r.status_code == 200
 
     def test_post_initialize(self, client):
-        r = client.post("/mcp", json={
-            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
-        })
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
         assert r.status_code == 200
         data = r.json()
         assert data["id"] == 1
         assert "result" in data
 
     def test_post_tools_list(self, client):
-        r = client.post("/mcp", json={
-            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
-        })
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
         assert r.status_code == 200
         tools = r.json()["result"]["tools"]
         assert tools[0]["name"] == "use_memory_agent"
 
     def test_post_root_mirrors_mcp(self, client):
         """ChatGPT sends JSON-RPC to root — verify it works."""
-        r = client.post("/", json={
-            "jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}
-        })
+        r = client.post(
+            "/", json={"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}}
+        )
         assert r.status_code == 200
         assert "result" in r.json()
 
@@ -435,6 +447,7 @@ class TestMCPHTTPEndpoints:
 # 6. SSE server POST /message handler (mcp_sse_server.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSSEServerMessage:
     """mcp_sse_server.py — POST /message JSON-RPC handler."""
 
@@ -442,6 +455,7 @@ class TestSSEServerMessage:
     def client(self):
         from fastapi.testclient import TestClient
         from mcp_server.mcp_sse_server import create_app
+
         app = create_app()
         return TestClient(app)
 
@@ -455,33 +469,37 @@ class TestSSEServerMessage:
         assert r.status_code == 200
 
     def test_message_initialize(self, client):
-        r = client.post("/message", json={
-            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
-        })
+        r = client.post(
+            "/message",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
         assert r.status_code == 200
         data = r.json()
         assert data["result"]["protocolVersion"] == "2024-11-05"
 
     def test_message_tools_list(self, client):
-        r = client.post("/message", json={
-            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
-        })
+        r = client.post(
+            "/message",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
         assert r.status_code == 200
         tools = r.json()["result"]["tools"]
         assert tools[0]["name"] == "use_memory_agent"
 
     def test_message_unknown_method(self, client):
-        r = client.post("/message", json={
-            "jsonrpc": "2.0", "id": 99, "method": "bogus", "params": {}
-        })
+        r = client.post(
+            "/message",
+            json={"jsonrpc": "2.0", "id": 99, "method": "bogus", "params": {}},
+        )
         assert r.status_code == 200
         assert "error" in r.json()
 
     def test_sse_post_mirrors_message(self, client):
         """POST /sse should also handle JSON-RPC (some clients POST here)."""
-        r = client.post("/sse", json={
-            "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}
-        })
+        r = client.post(
+            "/sse",
+            json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+        )
         assert r.status_code == 200
         assert "result" in r.json()
 
@@ -490,6 +508,7 @@ class TestSSEServerMessage:
 # 7. Settings module (trivial import coverage)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSettings:
     def test_constants_exist(self):
         from mcp_server.settings import (
@@ -497,6 +516,7 @@ class TestSettings:
             MLX_4BIT_MEMORY_AGENT_NAME,
             MLX_8BIT_MEMORY_AGENT_NAME,
         )
+
         assert isinstance(MEMORY_AGENT_NAME, str)
         assert isinstance(MLX_4BIT_MEMORY_AGENT_NAME, str)
         assert isinstance(MLX_8BIT_MEMORY_AGENT_NAME, str)
