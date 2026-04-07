@@ -1,13 +1,13 @@
-# Contributing to Recall
+# Contributing to supermem
 
 ---
 
 ## Architecture Overview
 
-Recall is a uv workspace monorepo. Three packages share a virtual environment:
+supermem is a uv workspace monorepo. Three packages share a virtual environment:
 
 ```
-mem-agent-mcp/
+supermem/
 ├── supermem/          ← Core library (supermem-core)
 │   ├── core/        ABCs: BaseRetriever, BaseStorage, BaseModelClient, BaseConnector
 │   ├── storage/     DatabaseManager (SQLite FTS5), KuzuGraphManager, ChromaManager
@@ -16,10 +16,10 @@ mem-agent-mcp/
 │   ├── model/       OpenRouter, Ollama, vLLM, Claude, LMStudio clients
 │   ├── indexer/     VaultIndexer (watchdog live re-indexing)
 │   ├── privacy/     PrivacyFilter (<private> tag stripping)
-│   ├── errors.py    RecallError hierarchy
+│   ├── errors.py    Error hierarchy
 │   ├── config.py    All env-var config (single source of truth)
 │   └── logging.py   structlog JSON + correlation ID binding
-├── agent/           Agent conversation loop + sandboxed executor (preserved from v1)
+├── agent/           Agent conversation loop + sandboxed executor
 ├── mcp_server/      FastMCP server, 4 MCP tools, lifespan hooks
 ├── worker/          Optional FastAPI HTTP dashboard on :37777
 ├── memory_connectors/  5 import connectors (ChatGPT, Notion, Nuclino, GitHub, Google Docs)
@@ -96,7 +96,6 @@ class MyServiceConnector(BaseMemoryConnector):
         return [".zip", ".json"]  # accepted source file types
 
     def extract_data(self, source_path: str) -> dict:
-        # Validate format with helpful error messages:
         from pathlib import Path
         p = Path(source_path)
         if not p.exists():
@@ -116,12 +115,11 @@ class MyServiceConnector(BaseMemoryConnector):
         return organized
 
     def generate_memory_files(self, organized_data: dict) -> None:
-        # ... write .md files to self.output_path
         entities_dir = self.output_path / "entities" / "myservice"
         entities_dir.mkdir(parents=True, exist_ok=True)
         # ... write files ...
 
-        # REQUIRED: index all generated files into Recall storage
+        # REQUIRED: index all generated files into supermem storage
         try:
             from supermem.indexer.vault import VaultIndexer
             md_paths = list(entities_dir.rglob("*.md"))
@@ -210,13 +208,13 @@ uv run pytest tests/unit/test_database.py -v
 3. `mypy supermem/ agent/ mcp_server/` — type checking (continue-on-error)
 4. `pytest --cov=supermem --cov-fail-under=60` — tests + coverage gate
 
-On tag push (`v*`): builds Docker image + pushes to GHCR, publishes to PyPI.
+On tag push (`v*`): builds and pushes Docker image to GHCR.
 
 ---
 
 ## Reporting Issues
 
-Open an issue at [firstbatchxyz/mem-agent-mcp](https://github.com/firstbatchxyz/mem-agent-mcp/issues).
+Open an issue at [lamenting-hawthorn/supermem](https://github.com/lamenting-hawthorn/supermem/issues).
 
 Please include:
 - supermem version (`supermem --version`)
