@@ -60,13 +60,17 @@ def _read_vault_path() -> Path:
     return default
 
 
-SUPERMEM_VAULT_PATH: Path = Path(os.getenv("SUPERMEM_VAULT_PATH", str(_read_vault_path())))
+SUPERMEM_VAULT_PATH: Path = Path(
+    os.getenv("SUPERMEM_VAULT_PATH", str(_read_vault_path()))
+)
 
 _default_kuzu = Path.home() / ".supermem" / "graph"
 SUPERMEM_KUZU_PATH: Path = Path(os.getenv("SUPERMEM_KUZU_PATH", str(_default_kuzu)))
 
 _default_chroma = Path.home() / ".supermem" / "chroma"
-SUPERMEM_CHROMA_PATH: Path = Path(os.getenv("SUPERMEM_CHROMA_PATH", str(_default_chroma)))
+SUPERMEM_CHROMA_PATH: Path = Path(
+    os.getenv("SUPERMEM_CHROMA_PATH", str(_default_chroma))
+)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 

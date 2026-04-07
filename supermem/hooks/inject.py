@@ -17,7 +17,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-_DB_PATH = Path(os.getenv("SUPERMEM_DB_PATH", str(Path.home() / ".supermem" / "supermem.db")))
+_DB_PATH = Path(
+    os.getenv("SUPERMEM_DB_PATH", str(Path.home() / ".supermem" / "supermem.db"))
+)
 _MAX_RESULTS = 5
 _MAX_SNIPPET = 400
 _MIN_QUERY_LEN = 3

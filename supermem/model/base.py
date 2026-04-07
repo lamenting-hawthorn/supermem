@@ -91,7 +91,11 @@ class OllamaClient(BaseModelClient):
     """Calls a local Ollama instance. Zero cloud dependencies."""
 
     def __init__(self) -> None:
-        from supermem.config import OLLAMA_DEFAULT_MODEL, OLLAMA_HOST, SUPERMEM_LLM_MODEL
+        from supermem.config import (
+            OLLAMA_DEFAULT_MODEL,
+            OLLAMA_HOST,
+            SUPERMEM_LLM_MODEL,
+        )
 
         self._host = OLLAMA_HOST
         self._default_model = SUPERMEM_LLM_MODEL or OLLAMA_DEFAULT_MODEL

@@ -170,7 +170,9 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
         return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
 
     if not _check_rate("use_memory_agent"):
-        return f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
+        return (
+            f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
+        )
 
     # Apply legacy filters
     filters = _read_filters()
@@ -406,14 +408,18 @@ async def _startup() -> None:
 
     # ── Non-critical: vault indexer ───────────────────────────────────────────
     try:
-        vault = VaultIndexer(db=_ctx.db, graph=_ctx.graph, vault_path=SUPERMEM_VAULT_PATH)
+        vault = VaultIndexer(
+            db=_ctx.db, graph=_ctx.graph, vault_path=SUPERMEM_VAULT_PATH
+        )
         await vault.walk()
         vault.start_watcher()
     except Exception as exc:
         log.warning("vault_indexer_unavailable", error=str(exc))
 
     log.info(
-        "supermem_server_ready", session_id=_ctx.session_id, vault=str(SUPERMEM_VAULT_PATH)
+        "supermem_server_ready",
+        session_id=_ctx.session_id,
+        vault=str(SUPERMEM_VAULT_PATH),
     )
 
 
