@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from recall.capture.compressor import MemoryCompressor
-from recall.storage.database import DatabaseManager
+from supermem.capture.compressor import MemoryCompressor
+from supermem.storage.database import DatabaseManager
 
 
 @pytest_asyncio.fixture

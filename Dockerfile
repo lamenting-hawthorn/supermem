@@ -37,13 +37,13 @@ ENV PYTHONPATH="/app"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Default recall data dirs
-ENV RECALL_DB_PATH=/data/recall.db
-ENV RECALL_KUZU_PATH=/data/graph
-ENV RECALL_CHROMA_PATH=/data/chroma
-ENV RECALL_VAULT_PATH=/vault
+# Default supermem data dirs
+ENV SUPERMEM_DB_PATH=/data/supermem.db
+ENV SUPERMEM_KUZU_PATH=/data/graph
+ENV SUPERMEM_CHROMA_PATH=/data/chroma
+ENV SUPERMEM_VAULT_PATH=/vault
 
 EXPOSE 37777
 
-ENTRYPOINT ["python", "-m", "recall"]
+ENTRYPOINT ["python", "-m", "supermem"]
 CMD ["serve"]

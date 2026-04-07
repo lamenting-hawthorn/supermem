@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from recall.retrieval.agent import AgentRetriever
-from recall.storage.database import DatabaseManager
+from supermem.retrieval.agent import AgentRetriever
+from supermem.storage.database import DatabaseManager
 
 
 @pytest_asyncio.fixture

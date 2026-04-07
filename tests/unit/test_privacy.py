@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from recall.privacy.filter import PrivacyFilter
+from supermem.privacy.filter import PrivacyFilter
 
 
 def test_strip_removes_private_block() -> None:

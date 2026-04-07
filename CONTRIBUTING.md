@@ -8,7 +8,7 @@ Recall is a uv workspace monorepo. Three packages share a virtual environment:
 
 ```
 mem-agent-mcp/
-├── recall/          ← Core library (recall-core)
+├── supermem/          ← Core library (supermem-core)
 │   ├── core/        ABCs: BaseRetriever, BaseStorage, BaseModelClient, BaseConnector
 │   ├── storage/     DatabaseManager (SQLite FTS5), KuzuGraphManager, ChromaManager
 │   ├── retrieval/   FTSRetriever, GraphRetriever, VectorRetriever, AgentRetriever, HybridRetriever
@@ -35,7 +35,7 @@ HybridRetriever.search(query, tier_limit=4, min_results=3)
     │
     ├── FTSRetriever      tier=1  always available  wraps db.fts_search()
     ├── GraphRetriever    tier=2  requires kuzu     BFS from seed obs_ids → entity names → more obs_ids
-    ├── VectorRetriever   tier=3  RECALL_VECTOR=true  cosine similarity via ChromaDB
+    ├── VectorRetriever   tier=3  SUPERMEM_VECTOR=true  cosine similarity via ChromaDB
     └── AgentRetriever    tier=4  always available  wraps agent.Agent.chat(), last resort
 ```
 
@@ -43,7 +43,7 @@ HybridRetriever.search(query, tier_limit=4, min_results=3)
 
 ### Cross-Layer Contract
 
-**Rule: no direct imports between storage/retrieval/capture — only through ABCs in `recall/core/`.**
+**Rule: no direct imports between storage/retrieval/capture — only through ABCs in `supermem/core/`.**
 
 - `retrieval/` imports from `storage/` only via type hints (`TYPE_CHECKING`) or through constructor injection
 - `capture/` does not import `retrieval/`; it writes directly to `storage/`
@@ -65,7 +65,7 @@ uv sync
 
 # Run tests
 uv run pytest tests/ -v
-uv run pytest tests/ --cov=recall --cov-fail-under=60
+uv run pytest tests/ --cov=supermem --cov-fail-under=60
 
 # Lint / format
 uv run ruff check .
@@ -123,7 +123,7 @@ class MyServiceConnector(BaseMemoryConnector):
 
         # REQUIRED: index all generated files into Recall storage
         try:
-            from recall.indexer.vault import VaultIndexer
+            from supermem.indexer.vault import VaultIndexer
             md_paths = list(entities_dir.rglob("*.md"))
             if md_paths:
                 VaultIndexer.index_paths(md_paths)
@@ -145,7 +145,7 @@ CONNECTORS = {
 ### Connector Guidelines
 
 - Always validate the source format early with a helpful error message that tells the user where to download the correct file
-- Strip `<private>` content before writing to markdown (use `recall.privacy.filter.PrivacyFilter.strip()`)
+- Strip `<private>` content before writing to markdown (use `supermem.privacy.filter.PrivacyFilter.strip()`)
 - Call `VaultIndexer.index_paths()` at the end of `generate_memory_files()` — this is what populates SQLite for FTS search
 - For HTTP connectors: add retry with exponential backoff (use `tenacity`), respect `Retry-After` headers, add 1 req/s rate limiting for unauthenticated APIs
 - For large imports: use `rich.progress.Progress` for progress bars
@@ -154,12 +154,12 @@ CONNECTORS = {
 
 ## Adding a New LLM Provider
 
-1. Add a new class in `recall/model/base.py` extending `BaseModelClient`:
+1. Add a new class in `supermem/model/base.py` extending `BaseModelClient`:
 
 ```python
 class MyProviderClient(BaseModelClient):
     def __init__(self) -> None:
-        from recall.config import MY_PROVIDER_API_KEY
+        from supermem.config import MY_PROVIDER_API_KEY
         if not MY_PROVIDER_API_KEY:
             raise ProviderNotConfiguredError("MY_PROVIDER_API_KEY is not set.")
         self._api_key = MY_PROVIDER_API_KEY
@@ -170,7 +170,7 @@ class MyProviderClient(BaseModelClient):
 
 2. Register in `get_client_for_provider()` mapping dict.
 
-3. Add `MY_PROVIDER_API_KEY` and any host/port vars to `recall/config.py`.
+3. Add `MY_PROVIDER_API_KEY` and any host/port vars to `supermem/config.py`.
 
 4. Add a mocked test in `tests/unit/test_model_clients.py`.
 
@@ -186,7 +186,7 @@ uv run pytest tests/unit/ -v
 uv run pytest tests/integration/ -v
 
 # Full suite with coverage
-uv run pytest tests/ --cov=recall --cov-fail-under=60
+uv run pytest tests/ --cov=supermem --cov-fail-under=60
 
 # Run a single test file
 uv run pytest tests/unit/test_database.py -v
@@ -207,8 +207,8 @@ uv run pytest tests/unit/test_database.py -v
 
 1. `ruff check .` — linting
 2. `black --check .` — formatting
-3. `mypy recall/ agent/ mcp_server/` — type checking (continue-on-error)
-4. `pytest --cov=recall --cov-fail-under=60` — tests + coverage gate
+3. `mypy supermem/ agent/ mcp_server/` — type checking (continue-on-error)
+4. `pytest --cov=supermem --cov-fail-under=60` — tests + coverage gate
 
 On tag push (`v*`): builds Docker image + pushes to GHCR, publishes to PyPI.
 
@@ -219,7 +219,7 @@ On tag push (`v*`): builds Docker image + pushes to GHCR, publishes to PyPI.
 Open an issue at [firstbatchxyz/mem-agent-mcp](https://github.com/firstbatchxyz/mem-agent-mcp/issues).
 
 Please include:
-- Recall version (`recall --version`)
-- `RECALL_LLM_PROVIDER` value
+- supermem version (`supermem --version`)
+- `SUPERMEM_LLM_PROVIDER` value
 - Full error traceback
 - Whether you're using MCP stdio or HTTP transport

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from recall.capture.observation import ObservationCapture
-from recall.storage.database import DatabaseManager
+from supermem.capture.observation import ObservationCapture
+from supermem.storage.database import DatabaseManager
 
 
 @pytest_asyncio.fixture

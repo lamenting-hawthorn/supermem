@@ -1,4 +1,4 @@
-"""Unit tests for recall CLI (__main__.py) — argument parsing and command dispatch."""
+"""Unit tests for supermem CLI (__main__.py) — argument parsing and command dispatch."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import pytest
 def _parse(args: list[str]):
     """Parse CLI args without executing any command."""
     import argparse
-    from recall.__main__ import main
+    from supermem.__main__ import main
 
     # Capture the parsed namespace by patching dispatch
     captured = {}
@@ -26,12 +26,12 @@ def _parse(args: list[str]):
         captured["ns"] = ns
 
     with (
-        patch("recall.__main__.cmd_serve", fake_dispatch),
-        patch("recall.__main__.cmd_chat", fake_dispatch),
-        patch("recall.__main__.cmd_backup", fake_dispatch),
-        patch("recall.__main__.cmd_restore", fake_dispatch),
-        patch("recall.__main__.cmd_connect", fake_dispatch),
-        patch("sys.argv", ["recall"] + args),
+        patch("supermem.__main__.cmd_serve", fake_dispatch),
+        patch("supermem.__main__.cmd_chat", fake_dispatch),
+        patch("supermem.__main__.cmd_backup", fake_dispatch),
+        patch("supermem.__main__.cmd_restore", fake_dispatch),
+        patch("supermem.__main__.cmd_connect", fake_dispatch),
+        patch("sys.argv", ["supermem"] + args),
     ):
         main()
 
@@ -88,9 +88,9 @@ def test_connect_max_items():
 
 
 def test_no_subcommand_exits():
-    with patch("sys.argv", ["recall"]):
+    with patch("sys.argv", ["supermem"]):
         with pytest.raises(SystemExit):
-            from recall.__main__ import main
+            from supermem.__main__ import main
 
             main()
 
@@ -100,20 +100,20 @@ def test_no_subcommand_exits():
 
 def test_cmd_backup_creates_archive(tmp_path: Path):
     import argparse
-    import recall.config as cfg
-    from recall.__main__ import cmd_backup
+    import supermem.config as cfg
+    from supermem.__main__ import cmd_backup
 
     vault = tmp_path / "vault"
     vault.mkdir()
     (vault / "note.md").write_text("# Test note")
-    db_file = tmp_path / "recall.db"
+    db_file = tmp_path / "supermem.db"
     db_file.write_bytes(b"SQLite fake data")
     output = tmp_path / "backup.tar.gz"
 
     ns = argparse.Namespace(output=str(output))
     with (
-        patch.object(cfg, "RECALL_VAULT_PATH", vault),
-        patch.object(cfg, "RECALL_DB_PATH", db_file),
+        patch.object(cfg, "SUPERMEM_VAULT_PATH", vault),
+        patch.object(cfg, "SUPERMEM_DB_PATH", db_file),
     ):
         cmd_backup(ns)
 
@@ -121,7 +121,7 @@ def test_cmd_backup_creates_archive(tmp_path: Path):
     with tarfile.open(output, "r:gz") as tar:
         names = tar.getnames()
     assert "vault/note.md" in names
-    assert "recall.db" in names
+    assert "supermem.db" in names
 
 
 # ── cmd_restore ───────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ def test_cmd_backup_creates_archive(tmp_path: Path):
 
 def test_cmd_restore_missing_archive_exits(tmp_path: Path):
     import argparse
-    from recall.__main__ import cmd_restore
+    from supermem.__main__ import cmd_restore
 
     ns = argparse.Namespace(archive=str(tmp_path / "nonexistent.tar.gz"))
     with pytest.raises(SystemExit):
@@ -138,7 +138,7 @@ def test_cmd_restore_missing_archive_exits(tmp_path: Path):
 
 def test_cmd_restore_extracts_files(tmp_path: Path):
     import argparse
-    from recall.__main__ import cmd_restore
+    from supermem.__main__ import cmd_restore
 
     # Create a backup archive
     archive = tmp_path / "backup.tar.gz"
@@ -151,12 +151,12 @@ def test_cmd_restore_extracts_files(tmp_path: Path):
         tar.add(str(note), arcname="vault/note.md")
         db_src = tmp_path / "src.db"
         db_src.write_bytes(b"fake db")
-        tar.add(str(db_src), arcname="recall.db")
+        tar.add(str(db_src), arcname="supermem.db")
 
     ns = argparse.Namespace(archive=str(archive))
     with (
-        patch("recall.config.RECALL_VAULT_PATH", vault_restore),
-        patch("recall.config.RECALL_DB_PATH", db_restore),
+        patch("supermem.config.SUPERMEM_VAULT_PATH", vault_restore),
+        patch("supermem.config.SUPERMEM_DB_PATH", db_restore),
     ):
         cmd_restore(ns)
 
@@ -168,7 +168,7 @@ def test_cmd_restore_extracts_files(tmp_path: Path):
 
 
 def test_worker_port_default():
-    from recall.__main__ import _worker_port
+    from supermem.__main__ import _worker_port
 
     port = _worker_port()
     assert isinstance(port, int)
@@ -180,7 +180,7 @@ def test_worker_port_default():
 
 def test_connect_unknown_connector_exits():
     import argparse
-    from recall.__main__ import cmd_connect
+    from supermem.__main__ import cmd_connect
 
     ns = argparse.Namespace(
         connector="nonexistent_xyz",
