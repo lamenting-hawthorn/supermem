@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from recall.storage.database import DatabaseManager
+from supermem.storage.database import DatabaseManager
 
 
 @pytest.fixture

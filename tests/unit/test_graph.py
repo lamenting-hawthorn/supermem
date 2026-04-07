@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from recall.storage.graph import KuzuGraphManager
+from supermem.storage.graph import KuzuGraphManager
 
 
 @pytest.fixture
@@ -104,7 +104,7 @@ def test_unavailable_gracefully_returns_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When kuzu is not installed, all methods return empty/False without raising."""
-    import recall.storage.graph as graph_mod
+    import supermem.storage.graph as graph_mod
 
     monkeypatch.setattr(graph_mod, "_import_kuzu", lambda: None)
     g = KuzuGraphManager(tmp_path / "no_kuzu_graph")

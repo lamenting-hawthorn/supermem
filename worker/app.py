@@ -2,7 +2,7 @@
 Recall v2 Worker HTTP API — optional service on port 37777.
 
 If this service is NOT running, the MCP stdio server operates normally
-with zero degradation. Start with: recall serve --worker
+with zero degradation. Start with: supermem serve --worker
 
 Endpoints:
   GET  /              static/index.html — session viewer + search UI
@@ -14,7 +14,7 @@ Endpoints:
   GET  /backup        stream tar.gz of vault + SQLite snapshot
   GET  /stats         memory metrics
 
-Auth: Bearer token from RECALL_API_KEY header. Disabled when env var unset.
+Auth: Bearer token from SUPERMEM_API_KEY header. Disabled when env var unset.
 """
 
 from __future__ import annotations
@@ -34,22 +34,22 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from recall.capture.observation import ObservationCapture
-from recall.capture.session import SessionManager
-from recall.config import (
-    RECALL_API_KEY,
-    RECALL_DB_PATH,
-    RECALL_DEFAULT_TIER_LIMIT,
-    RECALL_VAULT_PATH,
-    RECALL_WORKER_HOST,
-    RECALL_WORKER_PORT,
+from supermem.capture.observation import ObservationCapture
+from supermem.capture.session import SessionManager
+from supermem.config import (
+    SUPERMEM_API_KEY,
+    SUPERMEM_DB_PATH,
+    SUPERMEM_DEFAULT_TIER_LIMIT,
+    SUPERMEM_VAULT_PATH,
+    SUPERMEM_WORKER_HOST,
+    SUPERMEM_WORKER_PORT,
 )
-from recall.indexer.vault import VaultIndexer
-from recall.logging import get_logger
-from recall.retrieval.hybrid import HybridRetriever
-from recall.storage.database import DatabaseManager
-from recall.storage.graph import KuzuGraphManager
-from recall.storage.vector import ChromaManager
+from supermem.indexer.vault import VaultIndexer
+from supermem.logging import get_logger
+from supermem.retrieval.hybrid import HybridRetriever
+from supermem.storage.database import DatabaseManager
+from supermem.storage.graph import KuzuGraphManager
+from supermem.storage.vector import ChromaManager
 
 log = get_logger(__name__)
 
@@ -77,7 +77,7 @@ async def _startup() -> None:
     _chroma = ChromaManager()
     _chroma.init()
     _retriever = HybridRetriever(db=_db, graph=_graph, chroma=_chroma)
-    log.info("worker_started", port=RECALL_WORKER_PORT)
+    log.info("worker_started", port=SUPERMEM_WORKER_PORT)
 
 
 @app.on_event("shutdown")
@@ -91,10 +91,10 @@ async def _shutdown() -> None:
 
 
 async def _require_auth(request: Request) -> None:
-    if not RECALL_API_KEY:
+    if not SUPERMEM_API_KEY:
         return  # auth disabled in personal mode
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != RECALL_API_KEY:
+    if not auth.startswith("Bearer ") or auth[7:] != SUPERMEM_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
 
 
@@ -194,7 +194,7 @@ async def list_observations(
 
 class SearchRequest(BaseModel):
     query: str
-    tier_limit: int = RECALL_DEFAULT_TIER_LIMIT
+    tier_limit: int = SUPERMEM_DEFAULT_TIER_LIMIT
 
 
 @app.post("/search")
@@ -237,7 +237,7 @@ async def rebuild_index(_: None = Depends(_require_auth)) -> JSONResponse:
     if not _db or not _graph:
         raise HTTPException(503, "Storage not available")
     try:
-        indexer = VaultIndexer(db=_db, graph=_graph, vault_path=RECALL_VAULT_PATH)
+        indexer = VaultIndexer(db=_db, graph=_graph, vault_path=SUPERMEM_VAULT_PATH)
         count = await asyncio.wait_for(indexer.walk(), timeout=300)
         return JSONResponse({"status": "ok", "files_indexed": count})
     except asyncio.TimeoutError:
@@ -252,24 +252,24 @@ async def backup(_: None = Depends(_require_auth)) -> StreamingResponse:
     import datetime
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"recall_backup_{timestamp}.tar.gz"
+    filename = f"supermem_backup_{timestamp}.tar.gz"
 
     def _generate():
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             # Add vault markdown files
-            if RECALL_VAULT_PATH.exists():
-                for md in RECALL_VAULT_PATH.rglob("*.md"):
+            if SUPERMEM_VAULT_PATH.exists():
+                for md in SUPERMEM_VAULT_PATH.rglob("*.md"):
                     try:
                         tar.add(
                             str(md),
-                            arcname=f"vault/{md.relative_to(RECALL_VAULT_PATH)}",
+                            arcname=f"vault/{md.relative_to(SUPERMEM_VAULT_PATH)}",
                         )
                     except Exception:
                         pass
             # Add SQLite DB snapshot
-            if RECALL_DB_PATH.exists():
-                tar.add(str(RECALL_DB_PATH), arcname="recall.db")
+            if SUPERMEM_DB_PATH.exists():
+                tar.add(str(SUPERMEM_DB_PATH), arcname="supermem.db")
         buf.seek(0)
         yield buf.read()
 
@@ -297,7 +297,7 @@ async def stats(_: None = Depends(_require_auth)) -> JSONResponse:
 def run() -> None:
     import uvicorn
 
-    uvicorn.run(app, host=RECALL_WORKER_HOST, port=RECALL_WORKER_PORT)
+    uvicorn.run(app, host=SUPERMEM_WORKER_HOST, port=SUPERMEM_WORKER_PORT)
 
 
 if __name__ == "__main__":

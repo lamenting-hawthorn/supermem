@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Recall** — persistent AI memory without RAG. An MCP server that lets AI assistants (Claude Desktop, ChatGPT, LM Studio) navigate a local markdown knowledge base using a fine-tuned agent model, not vector search. The agent reads/writes memory files via sandboxed Python execution with Obsidian-style `[[wikilinks]]` for multi-hop reasoning.
+supermem — persistent AI memory without RAG. An MCP server that lets AI assistants (Claude Desktop, ChatGPT, LM Studio) navigate a local markdown knowledge base using a fine-tuned agent model, not vector search. The agent reads/writes memory files via sandboxed Python execution with Obsidian-style `[[wikilinks]]` for multi-hop reasoning.
 
 ## Build & Run Commands
 
@@ -59,7 +59,7 @@ uv workspace monorepo with four packages:
 |---------|------|---------|
 | `agent` | `agent/` | Core agent logic — conversation loop, sandboxed execution, file tools, LLM clients |
 | `mcp-server` | `mcp_server/` | FastMCP wrapper exposing agent as MCP tool, stdio + HTTP transports |
-| `recall-core` | `recall/` | v2 layer — hybrid retrieval, graph/vector/SQLite storage, session tracking, Worker HTTP API |
+| `supermem-core` | `supermem/` | v2 layer — hybrid retrieval, graph/vector/SQLite storage, session tracking, Worker HTTP API |
 | `memory_connectors` | `memory_connectors/` | Plugin system for importing data (ChatGPT, Notion, Nuclino, GitHub, Google Docs) |
 
 ### Data Flow
@@ -81,30 +81,30 @@ agent/agent.py — conversation loop, up to 20 tool turns
   Memory Vault (local markdown files with [[wikilinks]])
         │
         ▼ (v2 indexing — when Worker is running)
-  recall/ — HybridRetriever (FTS5 → graph → vector → agent, 4 tiers)
-  ├── recall/storage/database.py  — SQLite via aiosqlite
-  ├── recall/storage/graph.py     — Kuzu graph DB
-  ├── recall/storage/vector.py    — Chroma vector store
-  └── recall/indexer/vault.py     — walks vault, populates stores
+  supermem/ — HybridRetriever (FTS5 → graph → vector → agent, 4 tiers)
+  ├── supermem/storage/database.py  — SQLite via aiosqlite
+  ├── supermem/storage/graph.py     — Kuzu graph DB
+  ├── supermem/storage/vector.py    — Chroma vector store
+  └── supermem/indexer/vault.py     — walks vault, populates stores
 ```
 
-### recall CLI (v2 entry point)
+### supermem CLI (entry point)
 
-The `recall` package installs a CLI (`uv run recall` or just `recall` after install):
+The `supermem` package installs a CLI (`uv run supermem` or just `supermem` after install):
 
 ```bash
-recall serve               # Start MCP server (stdio)
-recall serve --worker      # MCP server + Worker HTTP API on :37777
-recall chat                # Interactive terminal REPL
-recall backup              # Archive vault + SQLite → timestamped .tar.gz
-recall restore <file>      # Restore from archive
-recall connect chatgpt ~/Downloads/export.zip
-recall connect github owner/repo --token ghp_xxx
+supermem serve               # Start MCP server (stdio)
+supermem serve --worker      # MCP server + Worker HTTP API on :37777
+supermem chat                # Interactive terminal REPL
+supermem backup              # Archive vault + SQLite → timestamped .tar.gz
+supermem restore <file>      # Restore from archive
+supermem connect chatgpt ~/Downloads/export.zip
+supermem connect github owner/repo --token ghp_xxx
 ```
 
 ### Worker HTTP API (`:37777`)
 
-Optional service started via `recall serve --worker`. Provides:
+Optional service started via `supermem serve --worker`. Provides:
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -117,7 +117,7 @@ Optional service started via `recall serve --worker`. Provides:
 | `GET /stats` | Memory metrics |
 | `GET /` | Static session viewer UI (`worker/static/index.html`) |
 
-Auth: `Authorization: Bearer <RECALL_API_KEY>` header; disabled when env var unset.
+Auth: `Authorization: Bearer <SUPERMEM_API_KEY>` header; disabled when env var unset.
 
 ### Key Design Decisions
 
@@ -146,8 +146,8 @@ Auth: `Authorization: Bearer <RECALL_API_KEY>` header; disabled when env var uns
 
 - **Python**: 3.11 (exact, enforced in pyproject.toml)
 - **Config files**: `.memory_path` (memory dir), `.mlx_model_name` (model), `.filters` (privacy rules)
-- **Env vars**: see `.env.example` — OPENROUTER_API_KEY, VLLM_HOST/PORT, LOG_LEVEL, MCP_TRANSPORT; v2 adds RECALL_VAULT_PATH, RECALL_DB_PATH, RECALL_WORKER_PORT (default 37777), RECALL_API_KEY
-- **Remotes**: `origin` = fork (`lamenting-hawthorn/recall`), `upstream` = `firstbatchxyz/mem-agent-mcp`
+- **Env vars**: see `.env.example` — OPENROUTER_API_KEY, VLLM_HOST/PORT, LOG_LEVEL, MCP_TRANSPORT; v2 adds SUPERMEM_VAULT_PATH, SUPERMEM_DB_PATH, SUPERMEM_WORKER_PORT (default 37777), SUPERMEM_API_KEY
+- **Remotes**: `origin` = fork (`lamenting-hawthorn/supermem`), `upstream` = `firstbatchxyz/mem-agent-mcp`
 - **Docker**: `docker-compose.yml` + `Dockerfile` available for containerized deployment
 
 ## Skill routing

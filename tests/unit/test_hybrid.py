@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from recall.retrieval.hybrid import HybridRetriever
-from recall.storage.database import DatabaseManager
-from recall.storage.graph import KuzuGraphManager
-from recall.storage.vector import ChromaManager
+from supermem.retrieval.hybrid import HybridRetriever
+from supermem.storage.database import DatabaseManager
+from supermem.storage.graph import KuzuGraphManager
+from supermem.storage.vector import ChromaManager
 
 
 @pytest_asyncio.fixture
@@ -30,7 +30,7 @@ def graph(tmp_path: Path) -> KuzuGraphManager:
 
 @pytest.fixture
 def chroma() -> ChromaManager:
-    # RECALL_VECTOR is false by default → unavailable
+    # SUPERMEM_VECTOR is false by default → unavailable
     return ChromaManager()
 
 
@@ -62,7 +62,7 @@ async def test_tier3_skipped_when_unavailable(
     db: DatabaseManager, retriever: HybridRetriever
 ) -> None:
     await db.write_observation("vector search test")
-    # With RECALL_VECTOR=false, tier 3 is skipped — no error raised
+    # With SUPERMEM_VECTOR=false, tier 3 is skipped — no error raised
     result = await retriever.search("vector search test", tier_limit=3)
     assert result.source_tier <= 2  # only tiers 1-2 ran
 

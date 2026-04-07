@@ -12,13 +12,13 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from recall.capture.observation import ObservationCapture
-from recall.capture.session import SessionManager
-from recall.indexer.vault import VaultIndexer
-from recall.retrieval.hybrid import HybridRetriever
-from recall.storage.database import DatabaseManager
-from recall.storage.graph import KuzuGraphManager
-from recall.storage.vector import ChromaManager
+from supermem.capture.observation import ObservationCapture
+from supermem.capture.session import SessionManager
+from supermem.indexer.vault import VaultIndexer
+from supermem.retrieval.hybrid import HybridRetriever
+from supermem.storage.database import DatabaseManager
+from supermem.storage.graph import KuzuGraphManager
+from supermem.storage.vector import ChromaManager
 
 
 @pytest_asyncio.fixture

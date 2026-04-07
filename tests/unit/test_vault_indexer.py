@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from recall.indexer.vault import VaultIndexer
-from recall.storage.database import DatabaseManager
-from recall.storage.graph import KuzuGraphManager
+from supermem.indexer.vault import VaultIndexer
+from supermem.storage.database import DatabaseManager
+from supermem.storage.graph import KuzuGraphManager
 
 
 @pytest_asyncio.fixture

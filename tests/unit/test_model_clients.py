@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from recall.model.base import (
+from supermem.model.base import (
     ClaudeClient,
     LMStudioClient,
     OllamaClient,
@@ -14,7 +14,7 @@ from recall.model.base import (
     VLLMClient,
     get_client_for_provider,
 )
-from recall.errors import ProviderNotConfiguredError
+from supermem.errors import ProviderNotConfiguredError
 
 
 MESSAGES = [{"role": "user", "content": "hello"}]
@@ -27,7 +27,7 @@ MESSAGES = [{"role": "user", "content": "hello"}]
 
 @pytest.mark.asyncio
 async def test_openrouter_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    import recall.config as cfg
+    import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "OPENROUTER_API_KEY", "test-key")
 
@@ -48,7 +48,7 @@ def test_openrouter_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # Need to reload config so it picks up cleared env var
     import importlib
-    import recall.config as cfg
+    import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "OPENROUTER_API_KEY", "")
     with pytest.raises(ProviderNotConfiguredError):
@@ -125,7 +125,7 @@ async def test_lmstudio_returns_text() -> None:
 @pytest.mark.asyncio
 async def test_claude_converts_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("anthropic", reason="anthropic package not installed")
-    import recall.config as cfg
+    import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "ANTHROPIC_API_KEY", "test-anthropic-key")
 
@@ -151,7 +151,7 @@ async def test_claude_converts_messages(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_claude_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("anthropic", reason="anthropic package not installed")
-    import recall.config as cfg
+    import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "ANTHROPIC_API_KEY", "")
     with pytest.raises(ProviderNotConfiguredError):
@@ -164,7 +164,7 @@ def test_claude_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_client_for_provider_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
-    import recall.config as cfg
+    import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "OPENROUTER_API_KEY", "fake-key")
     client = get_client_for_provider("openrouter")

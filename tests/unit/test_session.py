@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from recall.capture.session import SessionManager
-from recall.storage.database import DatabaseManager
+from supermem.capture.session import SessionManager
+from supermem.storage.database import DatabaseManager
 
 
 @pytest_asyncio.fixture

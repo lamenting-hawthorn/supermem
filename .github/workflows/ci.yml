@@ -28,19 +28,19 @@ jobs:
         run: uv sync --frozen
 
       - name: Ruff lint
-        run: uv run ruff check recall/ agent/ mcp_server/ --output-format=github || true
+        run: uv run ruff check supermem/ agent/ mcp_server/ --output-format=github || true
 
       - name: Check formatting (black)
         run: uv run black --check .
 
       - name: mypy type-check
-        run: uv run mypy recall/ --ignore-missing-imports --no-error-summary
+        run: uv run mypy supermem/ --ignore-missing-imports --no-error-summary
         continue-on-error: true
 
       - name: pytest with coverage
         run: |
           uv run pytest tests/ \
-            --cov=recall \
+            --cov=supermem \
             --cov=agent \
             --cov-report=term-missing \
             --cov-report=xml \

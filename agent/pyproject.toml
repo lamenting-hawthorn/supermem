@@ -2,7 +2,7 @@
 name = "agent"
 version = "0.1.0"
 description = "Agent module for mem-agent-mcp project"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 dependencies = [
     "openai",
     "pydantic>=2.0.0",

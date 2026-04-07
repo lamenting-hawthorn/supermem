@@ -24,7 +24,7 @@ import pytest_asyncio
 
 # ── Module under test ─────────────────────────────────────────────────────────
 import mcp_server.server as srv
-from recall.core.retriever import RetrievalResult
+from supermem.core.retriever import RetrievalResult
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -42,16 +42,16 @@ class TestCheckRate:
         assert srv._check_rate("client-a") is True
 
     def test_within_limit(self):
-        for _ in range(srv.RECALL_RATE_LIMIT - 1):
+        for _ in range(srv.SUPERMEM_RATE_LIMIT - 1):
             assert srv._check_rate("client-b") is True
 
     def test_exceeds_limit(self):
-        for _ in range(srv.RECALL_RATE_LIMIT):
+        for _ in range(srv.SUPERMEM_RATE_LIMIT):
             srv._check_rate("client-c")
         assert srv._check_rate("client-c") is False
 
     def test_separate_clients_independent(self):
-        for _ in range(srv.RECALL_RATE_LIMIT):
+        for _ in range(srv.SUPERMEM_RATE_LIMIT):
             srv._check_rate("client-d")
         # Different client should still pass
         assert srv._check_rate("client-e") is True
@@ -117,12 +117,12 @@ class TestAuthOk:
     """Bearer token auth check."""
 
     def test_auth_disabled_when_no_key(self, monkeypatch):
-        monkeypatch.setattr(srv, "RECALL_API_KEY", "")
+        monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "")
         ctx = MagicMock()
         assert srv._auth_ok(ctx) is True
 
     def test_auth_passes_with_correct_token(self, monkeypatch):
-        monkeypatch.setattr(srv, "RECALL_API_KEY", "secret123")
+        monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
         mock_request = MagicMock()
         mock_request.headers = {"authorization": "Bearer secret123"}
         ctx = MagicMock()
@@ -130,7 +130,7 @@ class TestAuthOk:
         assert srv._auth_ok(ctx) is True
 
     def test_auth_fails_with_wrong_token(self, monkeypatch):
-        monkeypatch.setattr(srv, "RECALL_API_KEY", "secret123")
+        monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
         mock_request = MagicMock()
         mock_request.headers = {"authorization": "Bearer wrong"}
         ctx = MagicMock()
@@ -138,7 +138,7 @@ class TestAuthOk:
         assert srv._auth_ok(ctx) is False
 
     def test_auth_passes_stdio_no_http_request(self, monkeypatch):
-        monkeypatch.setattr(srv, "RECALL_API_KEY", "secret123")
+        monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
         ctx = MagicMock()
         ctx.get_http_request.side_effect = Exception("no HTTP context")
         assert srv._auth_ok(ctx) is True
@@ -150,12 +150,12 @@ class TestAuthOk:
 
 
 class TestRecallHybridTool:
-    """recall_hybrid() tool handler."""
+    """supermem_hybrid() tool handler."""
 
     @pytest.mark.asyncio
     async def test_returns_error_when_retriever_none(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "retriever", None)
-        result = await srv.recall_hybrid.fn("test query")
+        result = await srv.supermem_hybrid.fn("test query")
         data = json.loads(result)
         assert "error" in data
         assert data["obs_ids"] == []
@@ -171,7 +171,7 @@ class TestRecallHybridTool:
             {"id": 2, "content": "Bob is her manager"},
         ]
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.recall_hybrid.fn("alice")
+        result = await srv.supermem_hybrid.fn("alice")
         data = json.loads(result)
         assert data["source_tier"] == 1
         assert data["obs_ids"] == [1, 2]
@@ -182,7 +182,7 @@ class TestRecallHybridTool:
         mock_ret = AsyncMock()
         mock_ret.search.side_effect = RuntimeError("db connection lost")
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.recall_hybrid.fn("broken query")
+        result = await srv.supermem_hybrid.fn("broken query")
         data = json.loads(result)
         assert "error" in data
 
@@ -193,7 +193,7 @@ class TestRecallHybridTool:
             obs_ids=[], source_tier=0, latency_ms=0.1
         )
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.recall_hybrid.fn("zzznomatch")
+        result = await srv.supermem_hybrid.fn("zzznomatch")
         data = json.loads(result)
         assert data["obs_ids"] == []
         assert data["observations"] == []

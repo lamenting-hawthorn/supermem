@@ -787,7 +787,7 @@ class GitHubLiveConnector(BaseMemoryConnector):
     def _index_generated_files(self, root_dir: Path) -> None:
         """Index all generated .md files into the Recall storage layer."""
         try:
-            from recall.indexer.vault import VaultIndexer
+            from supermem.indexer.vault import VaultIndexer
 
             md_paths = list(root_dir.rglob("*.md"))
             if md_paths:

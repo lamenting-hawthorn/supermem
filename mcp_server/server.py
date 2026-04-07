@@ -2,12 +2,12 @@
 
 Tools:
   use_memory_agent   — original tool, now routes through HybridRetriever first
-  recall_hybrid      — explicit tiered search with source_tier metadata
+  supermem_hybrid      — explicit tiered search with source_tier metadata
   get_timeline       — chronological context around an observation
   get_observations   — batch fetch full observation content by IDs
 
-Auth:    Bearer token via RECALL_API_KEY (disabled when unset).
-Rate:    RECALL_RATE_LIMIT requests/min per client (default 60).
+Auth:    Bearer token via SUPERMEM_API_KEY (disabled when unset).
+Rate:    SUPERMEM_RATE_LIMIT requests/min per client (default 60).
 Session: Created on startup, closed with AI summary on shutdown.
 
 Apache 2.0 — original implementation.
@@ -44,14 +44,14 @@ except Exception:
 
     MLX_4BIT_MEMORY_AGENT_NAME = "mem-agent-mlx@4bit"
 
-from recall.config import (
-    RECALL_API_KEY,
-    RECALL_DEFAULT_TIER_LIMIT,
-    RECALL_MIN_RESULTS,
-    RECALL_RATE_LIMIT,
-    RECALL_VAULT_PATH,
+from supermem.config import (
+    SUPERMEM_API_KEY,
+    SUPERMEM_DEFAULT_TIER_LIMIT,
+    SUPERMEM_MIN_RESULTS,
+    SUPERMEM_RATE_LIMIT,
+    SUPERMEM_VAULT_PATH,
 )
-from recall.logging import get_logger, bind_request_id
+from supermem.logging import get_logger, bind_request_id
 
 log = get_logger(__name__)
 
@@ -85,7 +85,7 @@ def _check_rate(client_id: str) -> bool:
     # Remove timestamps older than 1 minute
     while bucket and now - bucket[0] > window:
         bucket.pop(0)
-    if len(bucket) >= RECALL_RATE_LIMIT:
+    if len(bucket) >= SUPERMEM_RATE_LIMIT:
         return False
     bucket.append(now)
     return True
@@ -99,7 +99,7 @@ def _repo_root() -> str:
 
 
 def _read_memory_path() -> str:
-    return str(RECALL_VAULT_PATH)
+    return str(SUPERMEM_VAULT_PATH)
 
 
 def _read_mlx_model_name(default_model: str) -> str:
@@ -128,12 +128,12 @@ def _auth_ok(ctx: Context) -> bool:
     is a local pipe — the OS already restricts access). For HTTP/SSE transport,
     the Bearer token is checked via the Starlette request object.
     """
-    if not RECALL_API_KEY:
+    if not SUPERMEM_API_KEY:
         return True  # auth disabled in personal mode
     try:
         request = ctx.get_http_request()
         auth_header = request.headers.get("authorization", "")
-        return auth_header == f"Bearer {RECALL_API_KEY}"
+        return auth_header == f"Bearer {SUPERMEM_API_KEY}"
     except Exception:
         # No HTTP request context (stdio transport) — skip auth
         return True
@@ -141,7 +141,7 @@ def _auth_ok(ctx: Context) -> bool:
 
 # ── MCP application ───────────────────────────────────────────────────────────
 
-mcp = FastMCP("recall-memory-server")
+mcp = FastMCP("supermem-server")
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -167,10 +167,12 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
     t0 = time.monotonic()
 
     if not _auth_ok(ctx):
-        return "auth_error: Bearer token required. Set RECALL_API_KEY."
+        return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
 
     if not _check_rate("use_memory_agent"):
-        return f"rate_limit_error: Too many requests. Limit is {RECALL_RATE_LIMIT}/min."
+        return (
+            f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
+        )
 
     # Apply legacy filters
     filters = _read_filters()
@@ -181,8 +183,8 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
         if _ctx.retriever is not None:
             result = await _ctx.retriever.search(
                 query=query,
-                tier_limit=RECALL_DEFAULT_TIER_LIMIT,
-                min_results=RECALL_MIN_RESULTS,
+                tier_limit=SUPERMEM_DEFAULT_TIER_LIMIT,
+                min_results=SUPERMEM_MIN_RESULTS,
             )
 
             if result.obs_ids:
@@ -238,7 +240,7 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
 
 
 @mcp.tool
-async def recall_hybrid(
+async def supermem_hybrid(
     query: str,
     tier_limit: int = 4,
     ctx: Context = None,  # type: ignore[assignment]
@@ -284,7 +286,7 @@ async def recall_hybrid(
         }
         return json.dumps(payload, indent=2)
     except Exception as exc:
-        log.warning("recall_hybrid_error", error=str(exc))
+        log.warning("supermem_hybrid_error", error=str(exc))
         return json.dumps({"error": str(exc), "obs_ids": []})
 
 
@@ -301,7 +303,7 @@ async def get_timeline(
     understand what was happening at that point in time.
 
     Args:
-        obs_id: The anchor observation ID (from recall_hybrid results).
+        obs_id: The anchor observation ID (from supermem_hybrid results).
         window: Number of observations to return on each side. Default 5.
 
     Returns:
@@ -325,7 +327,7 @@ async def get_observations(
     """
     Batch fetch full observation content by IDs.
 
-    Token-efficient pattern: use recall_hybrid first to get candidate IDs,
+    Token-efficient pattern: use supermem_hybrid first to get candidate IDs,
     then call this to fetch full content only for the relevant ones.
 
     Args:
@@ -354,14 +356,14 @@ async def _startup() -> None:
     the server is non-functional. Non-critical failures (graph, vector, vault
     indexer) are logged and the server continues in degraded mode.
     """
-    from recall.storage.database import DatabaseManager
-    from recall.storage.graph import KuzuGraphManager
-    from recall.storage.vector import ChromaManager
-    from recall.retrieval.hybrid import HybridRetriever
-    from recall.capture.session import SessionManager
-    from recall.capture.compressor import MemoryCompressor
-    from recall.capture.observation import ObservationCapture
-    from recall.indexer.vault import VaultIndexer
+    from supermem.storage.database import DatabaseManager
+    from supermem.storage.graph import KuzuGraphManager
+    from supermem.storage.vector import ChromaManager
+    from supermem.retrieval.hybrid import HybridRetriever
+    from supermem.capture.session import SessionManager
+    from supermem.capture.compressor import MemoryCompressor
+    from supermem.capture.observation import ObservationCapture
+    from supermem.indexer.vault import VaultIndexer
 
     # ── Critical: database must succeed ──────────────────────────────────────
     _ctx.db = DatabaseManager()
@@ -387,12 +389,12 @@ async def _startup() -> None:
         db=_ctx.db,
         graph=_ctx.graph,
         chroma=_ctx.chroma,
-        memory_path=str(RECALL_VAULT_PATH),
+        memory_path=str(SUPERMEM_VAULT_PATH),
     )
 
     # ── Non-critical: model client (optional, for compression/summaries) ─────
     try:
-        from recall.core.model_client import BaseModelClient
+        from supermem.core.model_client import BaseModelClient
 
         _ctx.model_client = BaseModelClient.from_env()
     except Exception as exc:
@@ -406,14 +408,18 @@ async def _startup() -> None:
 
     # ── Non-critical: vault indexer ───────────────────────────────────────────
     try:
-        vault = VaultIndexer(db=_ctx.db, graph=_ctx.graph, vault_path=RECALL_VAULT_PATH)
+        vault = VaultIndexer(
+            db=_ctx.db, graph=_ctx.graph, vault_path=SUPERMEM_VAULT_PATH
+        )
         await vault.walk()
         vault.start_watcher()
     except Exception as exc:
         log.warning("vault_indexer_unavailable", error=str(exc))
 
     log.info(
-        "recall_server_ready", session_id=_ctx.session_id, vault=str(RECALL_VAULT_PATH)
+        "supermem_server_ready",
+        session_id=_ctx.session_id,
+        vault=str(SUPERMEM_VAULT_PATH),
     )
 
 
@@ -429,7 +435,7 @@ async def _shutdown() -> None:
             await _ctx.db.close()
         except Exception:
             pass
-    log.info("recall_server_stopped")
+    log.info("supermem_server_stopped")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
