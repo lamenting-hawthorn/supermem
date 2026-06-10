@@ -1,6 +1,6 @@
 [project]
 name = "supermem"
-version = "0.3.0"
+version = "0.3.1"
 description = "Persistent AI memory without RAG — four-tier retrieval (SQLite FTS5 → graph → vectors → LLM agent)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
