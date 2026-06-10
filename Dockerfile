@@ -25,15 +25,16 @@ FROM python:3.11-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /build
 
-# Copy venv from builder
-COPY --from=builder /build/.venv /app/.venv
-COPY --from=builder /build /app
+# Copy venv and source from builder (paths must match builder WORKDIR)
+COPY --from=builder /build/.venv /build/.venv
+# Copy source contents (not the /build directory itself) into /build
+COPY --from=builder /build/ /build/
 
 # Ensure venv is used
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONPATH="/app"
+ENV PATH="/build/.venv/bin:$PATH"
+ENV PYTHONPATH="/build"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 

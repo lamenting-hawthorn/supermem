@@ -1,0 +1,36 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Tests
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+
+# CI
+.github/
+
+# Docs
+docs/
+
+# Dev
+.memory_path
+.filters
+.mlx_model_name
+mcp.json
+debug/
+tmp_work/
+
+# OS
+.DS_Store
