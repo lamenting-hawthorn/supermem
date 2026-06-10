@@ -2,9 +2,12 @@
 
 > **Persistent AI memory without RAG** — four-tier retrieval that uses an LLM agent only as a last resort, backed by SQLite FTS5, an embedded graph database, and your local markdown vault.
 
+[![PyPI](https://img.shields.io/pypi/v/supermem)](https://pypi.org/project/supermem/)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
+[![Docker](https://img.shields.io/badge/downloads-140%2B-orange)](https://github.com/lamenting-hawthorn/supermem/pkgs/container/supermem)
+[![CI](https://github.com/lamenting-hawthorn/supermem/actions/workflows/ci.yml/badge.svg)](https://github.com/lamenting-hawthorn/supermem/actions/workflows/ci.yml)
 
 An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — **persistent, structured memory** backed by SQLite + an optional graph database. The LLM agent is tier 4, not the default path — most queries resolve in milliseconds via full-text search.
 
@@ -111,7 +114,7 @@ ctx = await get_timeline(42, window=3)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUPERMEM_LLM_PROVIDER` | `openrouter` | `openrouter` \| `ollama` \| `vllm` \| `claude` \| `lmstudio` |
+| `SUPERMEM_LLM_PROVIDER` | `openrouter` | `openrouter` \| `ollama` \| `claude` \| `lmstudio` |
 | `SUPERMEM_LLM_MODEL` | provider default | Model string (e.g. `openai/gpt-4o-mini`, `llama3`) |
 | `SUPERMEM_DB_PATH` | `~/.supermem/supermem.db` | SQLite database path |
 | `SUPERMEM_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
@@ -123,8 +126,9 @@ ctx = await get_timeline(42, window=3)
 | `OPENROUTER_API_KEY` | _(required for openrouter)_ | OpenRouter API key |
 | `ANTHROPIC_API_KEY` | _(required for claude)_ | Anthropic API key |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `VLLM_HOST` / `VLLM_PORT` | `localhost` / `8000` | vLLM server address |
 | `LMSTUDIO_HOST` | `http://localhost:1234` | LM Studio server URL |
+
+> **Note:** Local model inference (vLLM/CUDA) is an optional extra. Install with `pip install supermem[local]` if you need it. Not included in the default install.
 
 ---
 

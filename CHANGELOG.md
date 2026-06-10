@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-10
+
+### Fixed
+- Dependency cleanup: removed heavy vLLM/CUDA requirements from core dependencies; moved to `[local]` extra for local model users
+- Docker image: explicit tag `ghcr.io/lamenting-hawthorn/supermem:0.3` for clarity
+- CI: lightweight test pipeline, no GPU dependencies
+
+## [0.3.0] - 2026-06-10
+
+### Added
+- Published to PyPI: `pip install supermem` now works
+- Docker: `ghcr.io/lamenting-hawthorn/supermem:0.3` with multi-stage build, sub-200MB base image
+- CI health checks: `pytest` coverage gate at 60%, ruff + black + mypy on every PR
+- New MCP tool `supermem_hybrid`: token-efficient, returns observation IDs first, latency metadata second
+- Progressive disclosure pattern documented for MCP tool usage
+
+### Changed
+- README: restructured Quick Start with pip as primary, Docker as production alternative
+- Download badge: 140+ pulls from GHCR now displayed in README
+- Four-tier retrieval short-circuit rule clarified in all docs
+
 ## [0.2.0] - 2026-04-07
 
 ### Added

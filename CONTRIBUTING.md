@@ -13,7 +13,7 @@ supermem/
 │   ├── storage/     DatabaseManager (SQLite FTS5), KuzuGraphManager, ChromaManager
 │   ├── retrieval/   FTSRetriever, GraphRetriever, VectorRetriever, AgentRetriever, HybridRetriever
 │   ├── capture/     ObservationCapture, SessionManager, MemoryCompressor
-│   ├── model/       OpenRouter, Ollama, vLLM, Claude, LMStudio clients
+| `model/`       | OpenRouter, Ollama, Claude, LMStudio clients |
 │   ├── indexer/     VaultIndexer (watchdog live re-indexing)
 │   ├── privacy/     PrivacyFilter (<private> tag stripping)
 │   ├── errors.py    Error hierarchy
