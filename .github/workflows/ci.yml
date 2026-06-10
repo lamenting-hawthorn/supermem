@@ -84,6 +84,12 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -91,6 +97,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          no-cache: true
 
   # ── PyPI publish (on tag push only) ────────────────────────────────────────
   pypi:
