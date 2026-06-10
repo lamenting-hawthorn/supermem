@@ -4,173 +4,235 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 
 ## Project Overview
 
-mem-agent-mcp is an MCP (Model Context Protocol) server that connects AI applications (Claude Desktop, LM Studio, ChatGPT) to a local memory agent. The agent manages an Obsidian-like memory system using a fine-tuned LLM (driaforall/mem-agent) that can read, write, and organize personal information in markdown files.
+supermem is an MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — persistent, structured memory backed by SQLite + an embedded graph database. The LLM agent is tier 4, not the default path — most queries resolve in milliseconds via full-text search.
 
-**Key Concept**: The memory agent uses structured markdown files with wikilink-style cross-references to maintain persistent memory across conversations. It executes sandboxed Python code to interact with the file system.
+**Key Concept**: Four-tier retrieval that short-circuits as soon as enough results are found. Tiers 1–3 never call an LLM. The LLM agent only activates when deterministic retrieval falls short.
 
 ## Essential Commands
 
 ### Initial Setup
 ```bash
-# 1. Check/install uv package manager
-make check-uv
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Install all dependencies (auto-installs LM Studio on macOS)
-make install
+# Clone and install
+git clone https://github.com/lamenting-hawthorn/supermem
+cd supermem
+uv sync
 
-# 3. Configure memory directory (GUI file picker)
-make setup
+# Configure (required)
+export SUPERMEM_VAULT_PATH=~/notes
+export SUPERMEM_LLM_PROVIDER=openrouter
+export OPENROUTER_API_KEY=your_key_here
+```
 
-# 3a. Configure memory directory (CLI alternative)
-make setup-cli
+### Running the Server
+```bash
+# Start MCP server (stdio transport, for Claude Desktop)
+uv run supermem serve
 
-# 4. Start the memory agent (will prompt for model precision on macOS)
-make run-agent
-# Options: 1) 4-bit (fast), 2) 8-bit (balanced), 3) bf16 (highest quality)
+# Start MCP server + HTTP dashboard
+uv run supermem serve --worker
 
-# 5. Generate MCP configuration file
-make generate-mcp-json
+# Dashboard at http://localhost:37777
 ```
 
 ### Development Workflow
 ```bash
-# Run interactive chat CLI to test the agent
-make chat-cli
+# Interactive terminal REPL (no client required)
+uv run supermem chat
 
-# Start MCP server via stdio (for Claude Desktop)
-make serve-mcp
+# Run all tests with coverage
+uv run pytest tests/ -v --cov=supermem --cov-report=term-missing
 
-# Start HTTP server for ChatGPT integration
-make serve-mcp-http  # Then use ngrok: ngrok http 8081
+# Unit tests only (fast, no network)
+uv run pytest tests/unit/ -v
+
+# Integration tests (real storage)
+uv run pytest tests/integration/ -v
 ```
 
 ### Memory Connectors
 ```bash
-# Interactive wizard (recommended)
-make memory-wizard
+# ChatGPT export (Settings → Data controls → Export data → .zip)
+uv run supermem connect chatgpt ~/Downloads/chatgpt_export.zip
 
-# Import ChatGPT conversations
-make connect-memory CONNECTOR=chatgpt SOURCE=/path/to/export.zip
+# Notion workspace export (.zip)
+uv run supermem connect notion ~/Downloads/notion_export.zip
 
-# Import Notion workspace
-make connect-memory CONNECTOR=notion SOURCE=/path/to/export.zip
+# Nuclino workspace export (.zip)
+uv run supermem connect nuclino ~/Downloads/nuclino_export.zip
 
-# Import Nuclino workspace
-make connect-memory CONNECTOR=nuclino SOURCE=/path/to/export.zip
+# GitHub repositories (live via API)
+uv run supermem connect github owner/repo1,owner/repo2 --token ghp_xxx
 
-# Import GitHub repository (live)
-make connect-memory CONNECTOR=github SOURCE="owner/repo" TOKEN=your_token
-
-# Import Google Docs (live)
-make connect-memory CONNECTOR=google-docs SOURCE="folder_id" TOKEN=your_token
+# Google Docs (OAuth, opens browser)
+uv run supermem connect google_docs "My Doc Name"
 ```
 
-### Filter Management
+### Backup & Restore
 ```bash
-# Add filters (privacy controls for agent responses)
-make add-filters
+# Create timestamped archive (vault + SQLite)
+uv run supermem backup
 
-# Clear all filters
-make reset-filters
+# Custom output path
+uv run supermem backup --output /path/to/archive.tar.gz
+
+# Restore from archive
+uv run supermem restore archive.tar.gz
 ```
 
 ## Architecture
 
-### Three-Layer System
+### Four-Tier Retrieval
 
-1. **Agent Layer** (`agent/`)
-   - Core memory agent implementation
-   - Sandboxed Python code execution engine
-   - OpenAI-compatible client (supports vLLM, MLX, OpenRouter)
-   - Tool functions for file/directory operations
+Every query goes through tiers in order, short-circuiting when enough results are found. Tiers 1–3 never call an LLM.
 
-2. **MCP Server Layer** (`mcp_server/`)
-   - FastMCP server exposing `use_memory_agent` tool
-   - Multiple transport modes: stdio, HTTP, SSE
-   - Reads configuration from `.memory_path` and `.mlx_model_name` files
-   - Manages filter injection from `.filters` file
+```
+Query
+  │
+  ├─ Tier 1: SQLite FTS5 full-text search          ~1ms    always available
+  │          porter tokenizer, WAL mode
+  │
+  ├─ Tier 2: Kuzu embedded graph expansion         ~5ms    optional (install kuzu)
+  │          BFS traversal via [[wikilink]] edges
+  │
+  ├─ Tier 3: ChromaDB vector similarity            ~50ms   optional (SUPERMEM_VECTOR=true)
+  │          sentence-transformer embeddings
+  │
+  └─ Tier 4: LLM agent fallback                   ~5-30s  always available
+             navigates vault via Python sandbox
+```
 
-3. **Memory Connectors** (`memory_connectors/`)
-   - Plugin system for importing external data sources
-   - Base class: `BaseMemoryConnector` with `extract_data()`, `organize_data()`, `generate_memory_files()`
-   - Supports both export-based (zip files) and live API connectors
+**Short-circuit rule**: If Tier 1 returns ≥ `min_results` (default 3), Tiers 2–4 are skipped entirely. Unavailable tiers are skipped with a WARNING log — no errors raised.
+
+### Workspace Structure
+
+This is a uv workspace with four packages:
+
+| Package | Purpose |
+|---------|---------|
+| `supermem` (root) | Core library, CLI entry points, package metadata |
+| `agent/` | LLM agent with sandboxed Python code execution |
+| `mcp_server/` | FastMCP server exposing memory tools over stdio/HTTP |
+| `memory_connectors/` | Plugin system for importing external data sources |
 
 ### Key Design Patterns
 
-**Workspace Structure**: This is a uv workspace with three packages:
-- Root: `mem-agent-mcp` (aggregator)
-- `agent/` (standalone agent package)
-- `mcp_server/` (MCP wrapper around agent)
+**MCP Tool Reference**:
 
-**Sandboxed Execution**: The agent generates Python code which is executed in a restricted environment:
-- File access limited to configured memory directory
-- Timeout enforcement (20 seconds default)
-- Blacklist for dangerous operations
-- Results must be assigned to variables or they're lost
+| Tool | Parameters | Returns | Notes |
+|------|-----------|---------|-------|
+| `use_memory_agent` | `query: str` | Formatted answer | Backward-compatible. Routes through all 4 tiers |
+| `supermem_hybrid` | `query: str`, `tier_limit: int = 4` | JSON with `obs_ids`, `source_tier`, `latency_ms` | Preferred for programmatic use |
+| `get_observations` | `ids: list[int]` | JSON array of observation dicts | Fetch full content for specific IDs |
+| `get_timeline` | `obs_id: int`, `window: int = 5` | JSON array of chronological observations | Context around a specific observation |
 
-**Memory Format**: Obsidian-compatible markdown structure:
+**Progressive Disclosure Pattern**:
+```python
+# 1. Search — cheap, returns IDs only
+result = await supermem_hybrid("Alice's project status", tier_limit=2)
+# Returns: {"obs_ids": [42, 17, 88], "source_tier": 1, "latency_ms": 2.1}
+
+# 2. Fetch — only for IDs you actually need
+obs = await get_observations([42, 17])
+
+# 3. Timeline — context around interesting observations
+ctx = await get_timeline(42, window=3)
 ```
-memory/
-├── user.md                    # Main user profile
-└── entities/
-    ├── person_name.md         # Individual entity files
-    ├── company_name.md
-    └── ...
-```
 
-**Agent Response Format**: The agent MUST follow strict XML-like tags:
+**Privacy**: Wrap sensitive content in `<private>...</private>` tags. It is stripped before writing to any storage layer (SQLite, Kuzu, ChromaDB). The content passes through to the agent sandbox only — it never persists.
+
+**Agent Response Format**: The agent uses structured tags:
 ```
 <think>reasoning</think>
 <python>code or empty</python>
 <reply>user response (only if python is empty)</reply>
 ```
 
-### Important Implementation Details
+### Environment Variables
 
-**Platform-Specific Behavior**:
-- macOS: Uses MLX models via LM Studio (`lms` CLI)
-- Linux: Uses vLLM for GPU inference
-- Model selection saved to `.mlx_model_name` at repo root
-
-**Memory Path Resolution**:
-- MCP server reads from `.memory_path` file (absolute or relative)
-- Falls back to `memory/mcp-server/` if not configured
-- Agent always resolves to absolute paths internally
-
-**Filter System**:
-- Filters stored in `.filters` file at repo root
-- Automatically injected into queries as `<filter>...</filter>` tags
-- Agent trained to respect filter constraints (privacy, obfuscation)
-
-**Tool Function Patterns**:
-- All tools in `agent/tools.py` MUST return values (not None)
-- Size limits enforced: 1MB per file, 10MB per directory, 100MB total
-- `update_file()` uses simple find-and-replace (no git-style diffs)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUPERMEM_LLM_PROVIDER` | `openrouter` | `openrouter` \| `ollama` \| `vllm` \| `claude` \| `lmstudio` |
+| `SUPERMEM_LLM_MODEL` | provider default | Model string (e.g. `openai/gpt-4o-mini`, `llama3`) |
+| `SUPERMEM_DB_PATH` | `~/.supermem/supermem.db` | SQLite database path |
+| `SUPERMEM_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
+| `SUPERMEM_VECTOR` | `false` | Set `true` to enable ChromaDB tier |
+| `SUPERMEM_API_KEY` | _(none)_ | Bearer token for HTTP API auth (disabled if unset) |
+| `SUPERMEM_RATE_LIMIT` | `60` | Requests/minute limit |
+| `SUPERMEM_WORKER_PORT` | `37777` | HTTP dashboard port |
+| `SUPERMEM_COMPRESS_EVERY` | `50` | Observations written before LLM compression |
+| `OPENROUTER_API_KEY` | _(required for openrouter)_ | OpenRouter API key |
+| `ANTHROPIC_API_KEY` | _(required for claude)_ | Anthropic API key |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `VLLM_HOST` / `VLLM_PORT` | `localhost` / `8000` | vLLM server address |
+| `LMSTUDIO_HOST` | `http://localhost:1234` | LM Studio server URL |
 
 ## Testing
 
 ```bash
-# Test with sample memories (healthcare, client_success)
-make run-agent
-make serve-mcp-http
-python examples/mem_agent_cli.py
+# All tests
+uv run pytest tests/ -v
 
-# Run agent tests (if available)
-cd agent && uv run pytest
+# Unit tests only (fast, no network)
+uv run pytest tests/unit/ -v
 
-# Run MCP server tests (if available)
-cd mcp_server && uv run pytest
+# Integration tests (real storage)
+uv run pytest tests/integration/ -v
+
+# With coverage (CI gate: 60%)
+uv run pytest tests/ --cov=supermem --cov-report=term-missing
 ```
 
-## Configuration Files
+Kuzu and Anthropic tests are auto-skipped if packages are not installed.
 
-- `.memory_path` - Absolute path to memory directory (created by `make setup`)
-- `.mlx_model_name` - MLX model name for macOS (created by `make run-agent`)
-- `.filters` - Privacy filters applied to all queries (optional)
-- `mcp.json` - Generated MCP configuration for Claude Desktop
-- `pyproject.toml` - Root workspace configuration
-- `agent/pyproject.toml` - Agent package dependencies
-- `mcp_server/pyproject.toml` - MCP server dependencies
+## CI Pipeline
+
+```bash
+# Linting and formatting
+uv run ruff check .
+uv run black --check .
+uv run mypy supermem/
+
+# Tests with coverage gate (60%)
+uv run pytest tests/ --cov=supermem --cov-report=term-missing
+```
+
+## Docker
+
+```bash
+# Clone and configure
+git clone https://github.com/lamenting-hawthorn/supermem
+cp .env.example .env
+# Edit .env: set SUPERMEM_VAULT_PATH, SUPERMEM_LLM_PROVIDER, API keys
+
+# MCP server only (stdio, for Claude Desktop)
+docker compose up supermem-mcp
+
+# MCP server + HTTP dashboard
+docker compose --profile worker up
+
+# Dashboard at http://localhost:37777
+```
+
+Image is distributed on GHCR (`ghcr.io/lamenting-hawthorn/supermem`).
+
+## Claude Desktop Configuration
+
+Add to `mcp.json`:
+```json
+{
+  "mcpServers": {
+    "supermem": {
+      "command": "supermem",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+When running from source, use `uv run supermem serve` as the command.
 
 ## Adding New Memory Connectors
 
@@ -179,22 +241,39 @@ cd mcp_server && uv run pytest
 3. Implement required methods:
    - `connector_name` (property)
    - `supported_formats` (property)
-   - `extract_data(source_path)` - Parse source data
-   - `organize_data(extracted_data)` - Categorize into topics
-   - `generate_memory_files(organized_data)` - Write markdown files
-4. Register in `memory_connectors/memory_connect.py`
-5. Add to `memory_connectors/__init__.py`
+   - `extract_data(source_path)` — Parse source data
+   - `organize_data(extracted_data)` — Categorize into topics
+   - `generate_memory_files(organized_data)` — Write markdown files
+4. Register in `memory_connectors/` discovery system
+5. All connectors write markdown to the vault, then automatically index into SQLite + graph
 
 ## Common Issues
 
-**Agent returns generic responses**: Memory files may not exist or lack proper topic navigation in `user.md`. Run `make chat-cli` to test directly.
+**MCP connection fails**: Verify `supermem` is on PATH. If using `uv run`, ensure the cwd is the repo root. Check Claude Desktop logs at `~/Library/Logs/Claude/`.
 
-**MCP connection fails**: Check Claude Desktop config at `~/.config/claude/claude_desktop.json`. Verify `mcp.json` was copied correctly. Check logs at `~/Library/Logs/Claude/mcp-server-memory-agent-stdio.log`.
+**Tier 4 (LLM agent) kicks in too often**: Your vault may be sparse. Import more content via `supermem connect` or increase `min_results` threshold to force Tiers 1–3 to work harder.
 
-**Model not found on macOS**: Ensure LM Studio is running and model is loaded. Check `.mlx_model_name` contains correct model identifier. Try changing from `mem-agent-mlx-4bit` to `mem-agent-mlx@4bit` format.
+**SQLite database locked**: Only one process should access the DB at a time. If using Docker, ensure you're not also running `supermem serve` locally against the same `SUPERMEM_DB_PATH`.
 
-**Import failures**: Verify export format matches connector expectations. Use `--max-items` to limit scope during debugging.
+**Kuzu graph tier skipped**: Kuzu is an optional dependency. Install with `pip install kuzu` or `uv add kuzu` in the root workspace.
+
+**ChromaDB tier skipped**: Set `SUPERMEM_VECTOR=true` and ensure `chromadb` and `sentence-transformers` are installed.
+
+**Import failures**: Verify export format matches connector expectations. Use `--max-items N` to limit scope during debugging.
+
+**Privacy tags not stripped**: Ensure tags are exactly `<private>` and `</private>` (case-sensitive). Content between these tags is preserved in memory but excluded from all storage indices.
 
 ## Python Version Requirement
 
-**Requires Python 3.11** (not 3.12+). This is enforced in all `pyproject.toml` files: `requires-python = ">=3.11,<3.12"`
+**Requires Python 3.11+**. This is enforced in `pyproject.toml`: `requires-python = ">=3.11"`.
+
+## Package Manager
+
+This project uses **uv** (not pip directly). Key commands:
+
+```bash
+uv sync                  # Install all workspace dependencies
+uv add <package>         # Add a dependency to the current package
+uv run <command>         # Run a command within the virtual environment
+uv run supermem <args>   # Run the supermem CLI
+```

@@ -15,7 +15,7 @@ An MCP (Model Context Protocol) server that gives AI assistants — Claude Deskt
 ```bash
 pip install supermem
 
-# Point Recall at a directory of markdown files
+# Point supermem at a directory of markdown files
 export SUPERMEM_VAULT_PATH=~/notes
 export SUPERMEM_LLM_PROVIDER=openrouter
 export OPENROUTER_API_KEY=your_key_here
@@ -42,7 +42,7 @@ Add to Claude Desktop `mcp.json`:
 
 ```bash
 # Clone and configure
-git clone https://github.com/firstbatchxyz/mem-agent-mcp
+git clone https://github.com/lamenting-hawthorn/supermem
 cp .env.example .env
 # Edit .env: set SUPERMEM_VAULT_PATH, SUPERMEM_LLM_PROVIDER, API keys
 
