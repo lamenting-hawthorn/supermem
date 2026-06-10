@@ -43,6 +43,9 @@ dependencies = [
     # ── CLI ───────────────────────────────────────────────────────────────────
     "rich>=13.7.0",
     "tenacity>=9.1.4",
+
+    # ── Code formatting (used by agent sandbox) ─────────────────────────────
+    "black",
 ]
 
 [project.optional-dependencies]
@@ -94,4 +97,13 @@ packages = [
     "agent",
     "mcp_server",
     "memory_connectors",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
 ]

@@ -1,7 +1,7 @@
 [project]
 name = "agent"
 version = "0.1.0"
-description = "Agent module for mem-agent-mcp project"
+description = "Agent module for supermem"
 requires-python = ">=3.11"
 dependencies = [
     "openai",
@@ -10,10 +10,13 @@ dependencies = [
     "aiofiles",
     "jinja2",
     "black",
+]
+
+[project.optional-dependencies]
+local = [
+    "vllm>=0.5.5; sys_platform != 'darwin'",
     "huggingface-hub>=0.34.3",
     "transformers>4.51.0,<4.54.0",
-    "vllm>=0.5.5; sys_platform != 'darwin'",
-    "setuptools"
 ]
 
 [build-system]
