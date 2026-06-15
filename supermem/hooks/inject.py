@@ -1,8 +1,8 @@
 """
-Recall ambient memory injection — UserPromptSubmit hook.
+supermem ambient memory injection — UserPromptSubmit hook.
 
 Reads stdin JSON from Claude Code, extracts the user's latest message,
-runs FTS5 search against the Recall SQLite DB (read-only, no MCP server
+runs FTS5 search against the supermem SQLite DB (read-only, no MCP server
 needed), and returns top matching observations as a systemMessage.
 
 Exit codes: always 0. On any error, outputs {"continue": true} silently.
@@ -110,7 +110,7 @@ def main() -> None:
             return
 
         body = "\n\n---\n\n".join(snippets)
-        system_msg = f"[Recall memory — relevant past context]\n\n{body}"
+        system_msg = f"[supermem memory — relevant past context]\n\n{body}"
         print(json.dumps({"systemMessage": system_msg, "continue": True}))
 
     except Exception:

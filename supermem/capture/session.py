@@ -1,4 +1,4 @@
-"""SessionManager — creates and closes Recall sessions with AI-generated summaries."""
+"""SessionManager — creates and closes supermem sessions with AI-generated summaries."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-_SUMMARY_PROMPT = """You are summarizing a Recall memory session.
+_SUMMARY_PROMPT = """You are summarizing a supermem memory session.
 Below are the observations captured during this session.
 Write a concise 2-3 sentence summary of what happened, what was learned, and what was stored.
 Be specific. Use past tense.

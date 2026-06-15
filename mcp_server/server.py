@@ -1,4 +1,4 @@
-"""Recall v2 MCP server — FastMCP with four-tier hybrid retrieval.
+"""supermem MCP server — FastMCP with four-tier hybrid retrieval.
 
 Tools:
   use_memory_agent   — original tool, now routes through HybridRetriever first
@@ -150,7 +150,7 @@ mcp = FastMCP("supermem-server")
 @mcp.tool
 async def use_memory_agent(question: str, ctx: Context) -> str:
     """
-    Query the Recall memory system.
+    Query the supermem memory system.
 
     Routes through the four-tier HybridRetriever first (fast). Falls back
     to the LLM agent (slow) only when the faster tiers return insufficient

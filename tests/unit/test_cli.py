@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -176,6 +175,39 @@ def test_worker_port_default():
 
 
 # ── Unknown connector ─────────────────────────────────────────────────────────
+
+
+def test_live_connector_modules_are_importable():
+    import importlib
+
+    github = importlib.import_module("memory_connectors.github_live.connector")
+    google_docs = importlib.import_module(
+        "memory_connectors.google_docs_live.connector"
+    )
+
+    assert hasattr(github, "GitHubLiveConnector")
+    assert hasattr(google_docs, "GoogleDocsLiveConnector")
+
+
+def test_cmd_connect_uses_connector_workflow():
+    import argparse
+    from unittest.mock import patch
+
+    from supermem.__main__ import cmd_connect
+
+    ns = argparse.Namespace(
+        connector="github",
+        source="owner/repo",
+        max_items=7,
+        token="ghp_test",
+    )
+
+    with patch(
+        "memory_connectors.github_live.connector.GitHubLiveConnector.connect"
+    ) as connect:
+        cmd_connect(ns)
+
+    connect.assert_called_once_with(source_path="owner/repo", max_items=7)
 
 
 def test_connect_unknown_connector_exits():

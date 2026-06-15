@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-_COMPRESS_PROMPT = """You are a memory compression agent for Recall.
+_COMPRESS_PROMPT = """You are a memory compression agent for supermem.
 Compress the following recent observations into a single dense summary.
 Keep all important facts, decisions, entities, and relationships.
 Remove redundancy. Write in the third person. Be concise but complete.

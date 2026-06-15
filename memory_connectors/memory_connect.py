@@ -22,7 +22,6 @@ from memory_connectors.chatgpt_history.embedding_connector import (
 from memory_connectors.github_live import GitHubLiveConnector
 from memory_connectors.google_docs_live import GoogleDocsLiveConnector
 
-
 # Registry of available connectors
 CONNECTORS: Dict[str, Type[BaseMemoryConnector]] = {
     "chatgpt": ChatGPTHistoryConnector,

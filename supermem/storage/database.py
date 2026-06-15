@@ -1,4 +1,4 @@
-"""DatabaseManager — SQLite + FTS5 source-of-truth storage for Recall v2."""
+"""DatabaseManager — SQLite + FTS5 source-of-truth storage for supermem."""
 
 from __future__ import annotations
 

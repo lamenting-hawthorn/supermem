@@ -13,7 +13,7 @@ BF16_MEMORY_AGENT_SEARCH_NAME := mem-agent-mlx-bf16
 # Help command
 help:
 	@echo ""
-	@echo "  Recall — Persistent AI memory without RAG"
+	@echo "  supermem — Persistent AI memory without RAG"
 	@echo ""
 	@echo "  QUICK START (pick one path):"
 	@echo "    make quickstart          — no GPU, uses OpenRouter API (set OPENROUTER_API_KEY in .env)"
@@ -43,7 +43,7 @@ help:
 # Path A: API-only (no GPU needed — uses OpenRouter)
 quickstart:
 	@echo ""
-	@echo "  Recall — Quick Start (API mode)"
+	@echo "  supermem — Quick Start (API mode)"
 	@echo ""
 	@echo "  Step 1: Copy .env.example to .env and add your OPENROUTER_API_KEY"
 	@echo "          Get a key at: https://openrouter.ai/keys"
@@ -70,7 +70,7 @@ quickstart:
 # Path B: Local model (macOS Apple Silicon or Linux GPU)
 quickstart-local:
 	@echo ""
-	@echo "  Recall — Quick Start (local model)"
+	@echo "  supermem — Quick Start (local model)"
 	@echo ""
 	$(MAKE) install
 	$(MAKE) setup-cli

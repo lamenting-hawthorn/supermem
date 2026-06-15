@@ -1,4 +1,4 @@
-"""Typed exception hierarchy for Recall v2.
+"""Typed exception hierarchy for supermem.
 
 Every exception is a subclass of RecallError and carries a recovery_hint
 string that is safe to surface to users and log at WARNING level.
@@ -15,7 +15,7 @@ class RecallError(Exception):
         recovery_hint: A human-readable suggestion for how to recover.
     """
 
-    recovery_hint: str = "Check the Recall logs for details."
+    recovery_hint: str = "Check the supermem logs for details."
 
     def __init__(self, message: str, recovery_hint: str | None = None):
         super().__init__(message)

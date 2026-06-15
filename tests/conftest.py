@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures for the Recall test suite.
+Shared pytest fixtures for the supermem test suite.
 """
 
 import os

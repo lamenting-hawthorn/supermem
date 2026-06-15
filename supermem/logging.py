@@ -1,4 +1,4 @@
-"""Structured JSON logging for Recall v2, built on structlog."""
+"""Structured JSON logging for supermem, built on structlog."""
 
 from __future__ import annotations
 

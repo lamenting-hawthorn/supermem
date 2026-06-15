@@ -16,7 +16,6 @@ from supermem.model.base import (
 )
 from supermem.errors import ProviderNotConfiguredError
 
-
 MESSAGES = [{"role": "user", "content": "hello"}]
 
 

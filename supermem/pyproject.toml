@@ -1,7 +1,7 @@
 [project]
 name = "supermem-core"
 version = "0.1.0"
-description = "Recall v2 core — ABCs, errors, logging, config"
+description = "supermem core — ABCs, errors, logging, config"
 requires-python = ">=3.11"
 dependencies = [
     "structlog>=24.0.0",
