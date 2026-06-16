@@ -1,15 +1,15 @@
 """Typed exception hierarchy for supermem.
 
-Every exception is a subclass of RecallError and carries a recovery_hint
+Every exception is a subclass of SupermemError and carries a recovery_hint
 string that is safe to surface to users and log at WARNING level.
 """
 
 from __future__ import annotations
 
 
-class RecallError(Exception):
+class SupermemError(Exception):
     """
-    Base class for all Recall exceptions.
+    Base class for all supermem exceptions.
 
     Attributes:
         recovery_hint: A human-readable suggestion for how to recover.
@@ -23,7 +23,11 @@ class RecallError(Exception):
             self.recovery_hint = recovery_hint
 
 
-class StorageError(RecallError):
+# Backward-compatible alias for older imports.
+RecallError = SupermemError
+
+
+class StorageError(SupermemError):
     """Raised when a read/write to SQLite, Kuzu, or Chroma fails."""
 
     recovery_hint = (
@@ -32,7 +36,7 @@ class StorageError(RecallError):
     )
 
 
-class VaultIndexError(RecallError):
+class VaultIndexError(SupermemError):
     """Raised when the VaultIndexer cannot read or parse a markdown file."""
 
     recovery_hint = (
@@ -41,7 +45,7 @@ class VaultIndexError(RecallError):
     )
 
 
-class GraphTraversalError(RecallError):
+class GraphTraversalError(SupermemError):
     """Raised when Kuzu graph traversal fails or returns corrupt data."""
 
     recovery_hint = (
@@ -50,7 +54,7 @@ class GraphTraversalError(RecallError):
     )
 
 
-class SandboxTimeoutError(RecallError):
+class SandboxTimeoutError(SupermemError):
     """Raised when the agent's sandboxed code execution exceeds its time limit."""
 
     recovery_hint = (
@@ -59,7 +63,7 @@ class SandboxTimeoutError(RecallError):
     )
 
 
-class FilePermissionError(RecallError):
+class FilePermissionError(SupermemError):
     """Raised when the sandbox tries to access a path outside the vault."""
 
     recovery_hint = (
@@ -68,7 +72,7 @@ class FilePermissionError(RecallError):
     )
 
 
-class LLMProviderError(RecallError):
+class LLMProviderError(SupermemError):
     """Raised when an LLM provider call fails (network, auth, rate-limit, etc.)."""
 
     recovery_hint = (
@@ -86,7 +90,7 @@ class ProviderNotConfiguredError(LLMProviderError):
     )
 
 
-class AuthError(RecallError):
+class AuthError(SupermemError):
     """Raised when a Bearer token is required but missing or invalid."""
 
     recovery_hint = (
@@ -95,7 +99,7 @@ class AuthError(RecallError):
     )
 
 
-class RateLimitError(RecallError):
+class RateLimitError(SupermemError):
     """Raised when a client exceeds the configured request rate."""
 
     recovery_hint = (

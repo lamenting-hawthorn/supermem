@@ -1,12 +1,8 @@
 import os
-import tempfile
 import uuid
-import subprocess
-from pathlib import Path
 from typing import Union
 
-from agent.settings import MEMORY_PATH
-from agent.utils import check_size_limits, create_memory_if_not_exists
+from agent.utils import check_size_limits
 
 
 def get_size(file_or_dir_path: str) -> int:

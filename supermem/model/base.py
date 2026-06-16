@@ -76,7 +76,7 @@ class OpenRouterClient(BaseModelClient):
         try:
             resp = await client.chat.completions.create(
                 model=model or self._default_model,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 **kwargs,
             )
             return resp.choices[0].message.content or ""
@@ -149,7 +149,7 @@ class VLLMClient(BaseModelClient):
         try:
             resp = await client.chat.completions.create(
                 model=model or self._default_model,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 **kwargs,
             )
             return resp.choices[0].message.content or ""
@@ -245,7 +245,7 @@ class LMStudioClient(BaseModelClient):
         try:
             _model = model or self._default_model or "local-model"
             resp = await client.chat.completions.create(
-                model=_model, messages=messages, **kwargs
+                model=_model, messages=messages, **kwargs  # type: ignore[arg-type]
             )
             return resp.choices[0].message.content or ""
         except Exception as exc:

@@ -24,7 +24,6 @@ import socket
 import sys
 import time
 import uuid
-from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP, Context
@@ -44,14 +43,14 @@ except Exception:
 
     MLX_4BIT_MEMORY_AGENT_NAME = "mem-agent-mlx@4bit"
 
-from supermem.config import (
+from supermem.config import (  # noqa: E402
     SUPERMEM_API_KEY,
     SUPERMEM_DEFAULT_TIER_LIMIT,
     SUPERMEM_MIN_RESULTS,
     SUPERMEM_RATE_LIMIT,
     SUPERMEM_VAULT_PATH,
-)
-from supermem.logging import get_logger, bind_request_id
+)  # noqa: E402
+from supermem.logging import get_logger, bind_request_id  # noqa: E402
 
 log = get_logger(__name__)
 
@@ -262,7 +261,6 @@ async def supermem_hybrid(
     if _ctx.retriever is None:
         return json.dumps({"error": "HybridRetriever not initialised", "obs_ids": []})
 
-    t0 = time.monotonic()
     try:
         result = await _ctx.retriever.search(query=query, tier_limit=tier_limit)
         obs_list = (

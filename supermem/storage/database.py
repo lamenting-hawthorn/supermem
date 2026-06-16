@@ -92,17 +92,18 @@ class DatabaseManager(BaseStorage):
         if self._conn is not None:
             return
         try:
-            self._conn = await aiosqlite.connect(self._path)
-            self._conn.row_factory = aiosqlite.Row
-            await self._conn.executescript(_SCHEMA)
+            conn = await aiosqlite.connect(self._path)
+            self._conn = conn
+            conn.row_factory = aiosqlite.Row
+            await conn.executescript(_SCHEMA)
             # Add expires_at column if this is an existing DB without it
             try:
-                await self._conn.execute(
+                await conn.execute(
                     "ALTER TABLE observations ADD COLUMN expires_at REAL"
                 )
             except Exception:
                 pass  # column already exists — normal for new installs
-            await self._conn.commit()
+            await conn.commit()
             # Purge expired observations on startup (lazy cleanup)
             await self._purge_expired()
             log.info("db_init", path=str(self._path))
@@ -114,8 +115,9 @@ class DatabaseManager(BaseStorage):
     async def _purge_expired(self) -> None:
         """Delete observations whose TTL has elapsed and clean up FTS index."""
         now = time.time()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 "SELECT id FROM observations WHERE expires_at IS NOT NULL AND expires_at < ?",
                 (now,),
             ) as cur:
@@ -123,13 +125,13 @@ class DatabaseManager(BaseStorage):
             if not expired_ids:
                 return
             placeholders = ",".join("?" * len(expired_ids))
-            await self._conn.execute(
+            await conn.execute(
                 f"DELETE FROM observations WHERE id IN ({placeholders})", expired_ids
             )
-            await self._conn.execute(
+            await conn.execute(
                 f"DELETE FROM content_fts WHERE obs_id IN ({placeholders})", expired_ids
             )
-            await self._conn.commit()
+            await conn.commit()
             log.info("db_purge_expired", count=len(expired_ids))
         except Exception as exc:
             log.warning("db_purge_failed", error=str(exc))
@@ -160,25 +162,23 @@ class DatabaseManager(BaseStorage):
         return obs[0] if obs else None
 
     async def delete(self, id: int) -> bool:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 "DELETE FROM observations WHERE id = ?", (id,)
             ) as cur:
                 deleted = cur.rowcount > 0
             if deleted:
-                await self._conn.execute(
-                    "DELETE FROM content_fts WHERE obs_id = ?", (id,)
-                )
-            await self._conn.commit()
+                await conn.execute("DELETE FROM content_fts WHERE obs_id = ?", (id,))
+            await conn.commit()
             return deleted
         except Exception as exc:
             raise StorageError(f"Delete failed: {exc}") from exc
 
     async def health(self) -> bool:
         try:
-            await self._ensure_init()
-            async with self._conn.execute("SELECT 1") as cur:
+            conn = await self._ensure_init()
+            async with conn.execute("SELECT 1") as cur:
                 await cur.fetchone()
             return True
         except Exception:
@@ -187,27 +187,27 @@ class DatabaseManager(BaseStorage):
     # ── Sessions ──────────────────────────────────────────────────────────────
 
     async def create_session(self, correlation_id: str | None = None) -> int:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 "INSERT INTO sessions (started_at, correlation_id) VALUES (?, ?)",
                 (time.time(), correlation_id),
             ) as cur:
                 session_id = cur.lastrowid
-            await self._conn.commit()
+            await conn.commit()
             log.info("session_created", session_id=session_id)
             return session_id
         except Exception as exc:
             raise StorageError(f"create_session failed: {exc}") from exc
 
     async def close_session(self, session_id: int, summary: str) -> None:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            await self._conn.execute(
+            await conn.execute(
                 "UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?",
                 (time.time(), summary, session_id),
             )
-            await self._conn.commit()
+            await conn.commit()
             log.info("session_closed", session_id=session_id)
         except Exception as exc:
             raise StorageError(f"close_session failed: {exc}") from exc
@@ -223,10 +223,10 @@ class DatabaseManager(BaseStorage):
         tool_name: str | None = None,
         obs_type: str = "observation",
     ) -> int:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         # Dedup: skip if identical content already recorded in this session
-        async with self._conn.execute(
+        async with conn.execute(
             "SELECT id FROM observations WHERE content_hash = ? AND session_id IS ?",
             (content_hash, session_id),
         ) as cur:
@@ -239,7 +239,7 @@ class DatabaseManager(BaseStorage):
         if obs_type == "observation" and SUPERMEM_OBS_TTL_DAYS > 0:
             expires_at = time.time() + SUPERMEM_OBS_TTL_DAYS * 86400
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 """INSERT INTO observations
                    (session_id, content, content_hash, tier_used, latency_ms, tool_name, type, expires_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -255,20 +255,20 @@ class DatabaseManager(BaseStorage):
                 ),
             ) as cur:
                 obs_id = cur.lastrowid
-            await self._conn.execute(
+            await conn.execute(
                 "INSERT INTO content_fts (obs_id, content) VALUES (?, ?)",
                 (obs_id, content),
             )
-            await self._conn.commit()
+            await conn.commit()
             return obs_id
         except Exception as exc:
             raise StorageError(f"write_observation failed: {exc}") from exc
 
     async def fts_search(self, query: str, limit: int = 20) -> list[int]:
         """FTS5 keyword search. Returns observation IDs ranked by relevance."""
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 """SELECT obs_id FROM content_fts
                    WHERE content_fts MATCH ?
                    ORDER BY rank
@@ -286,10 +286,10 @@ class DatabaseManager(BaseStorage):
         """Batch fetch full observation records by IDs."""
         if not ids:
             return []
-        await self._ensure_init()
+        conn = await self._ensure_init()
         placeholders = ",".join("?" * len(ids))
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 f"SELECT * FROM observations WHERE id IN ({placeholders}) ORDER BY created_at",
                 ids,
             ) as cur:
@@ -300,9 +300,9 @@ class DatabaseManager(BaseStorage):
 
     async def get_timeline(self, obs_id: int, window: int = 5) -> list[dict]:
         """Return the N observations before and after obs_id, chronologically."""
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 "SELECT created_at, session_id FROM observations WHERE id = ?",
                 (obs_id,),
             ) as cur:
@@ -320,11 +320,9 @@ class DatabaseManager(BaseStorage):
                 WHERE created_at >= ? AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at ASC LIMIT ?
             """
-            async with self._conn.execute(before_query, (ts, sid, sid, window)) as cur:
+            async with conn.execute(before_query, (ts, sid, sid, window)) as cur:
                 before = [dict(r) for r in await cur.fetchall()]
-            async with self._conn.execute(
-                after_query, (ts, sid, sid, window + 1)
-            ) as cur:
+            async with conn.execute(after_query, (ts, sid, sid, window + 1)) as cur:
                 after = [dict(r) for r in await cur.fetchall()]
             return list(reversed(before)) + after
         except Exception as exc:
@@ -334,8 +332,8 @@ class DatabaseManager(BaseStorage):
 
     async def get_entity_last_indexed(self, name: str) -> float | None:
         """Return last_indexed timestamp for an entity, or None if not indexed yet."""
-        await self._ensure_init()
-        async with self._conn.execute(
+        conn = await self._ensure_init()
+        async with conn.execute(
             "SELECT last_indexed FROM entity_metadata WHERE name = ?", (name,)
         ) as cur:
             row = await cur.fetchone()
@@ -344,9 +342,9 @@ class DatabaseManager(BaseStorage):
     async def upsert_entity(
         self, name: str, file_path: str, wikilink_count: int = 0
     ) -> None:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            await self._conn.execute(
+            await conn.execute(
                 """INSERT INTO entity_metadata (name, file_path, last_indexed, wikilink_count)
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(name) DO UPDATE SET
@@ -355,7 +353,7 @@ class DatabaseManager(BaseStorage):
                        wikilink_count = excluded.wikilink_count""",
                 (name, file_path, time.time(), wikilink_count),
             )
-            await self._conn.commit()
+            await conn.commit()
         except Exception as exc:
             raise StorageError(f"upsert_entity failed: {exc}") from exc
 
@@ -363,10 +361,10 @@ class DatabaseManager(BaseStorage):
         """Look up entity names that appear in observations — for graph expansion seed."""
         if not obs_ids:
             return []
-        await self._ensure_init()
+        conn = await self._ensure_init()
         placeholders = ",".join("?" * len(obs_ids))
         # Use FTS5 EXISTS subquery — index-accelerated vs instr() full scan
-        async with self._conn.execute(
+        async with conn.execute(
             f"""SELECT DISTINCT em.name FROM entity_metadata em
                 WHERE EXISTS (
                     SELECT 1 FROM content_fts
@@ -382,11 +380,11 @@ class DatabaseManager(BaseStorage):
         """Find observations that mention any of the given entity names."""
         if not entity_names:
             return []
-        await self._ensure_init()
+        conn = await self._ensure_init()
         results: list[int] = []
         for name in entity_names:
             # FTS5 phrase match — index-accelerated vs instr() full scan
-            async with self._conn.execute(
+            async with conn.execute(
                 "SELECT obs_id FROM content_fts WHERE content_fts MATCH ? LIMIT 20",
                 (f'"{name}"',),
             ) as cur:
@@ -397,12 +395,12 @@ class DatabaseManager(BaseStorage):
     # ── Stats ─────────────────────────────────────────────────────────────────
 
     async def get_stats(self) -> dict:
-        await self._ensure_init()
-        async with self._conn.execute("SELECT COUNT(*) FROM observations") as cur:
+        conn = await self._ensure_init()
+        async with conn.execute("SELECT COUNT(*) FROM observations") as cur:
             obs_count = (await cur.fetchone())[0]
-        async with self._conn.execute("SELECT COUNT(*) FROM entity_metadata") as cur:
+        async with conn.execute("SELECT COUNT(*) FROM entity_metadata") as cur:
             entity_count = (await cur.fetchone())[0]
-        async with self._conn.execute("SELECT COUNT(*) FROM sessions") as cur:
+        async with conn.execute("SELECT COUNT(*) FROM sessions") as cur:
             session_count = (await cur.fetchone())[0]
         db_size = self._path.stat().st_size if self._path.exists() else 0
         return {
@@ -420,15 +418,15 @@ class DatabaseManager(BaseStorage):
         content: str,
         obs_ids_compressed: list[int],
     ) -> int:
-        await self._ensure_init()
+        conn = await self._ensure_init()
         try:
-            async with self._conn.execute(
+            async with conn.execute(
                 """INSERT INTO summaries (session_id, content, obs_ids_compressed)
                    VALUES (?, ?, ?)""",
                 (session_id, content, json.dumps(obs_ids_compressed)),
             ) as cur:
                 row_id = cur.lastrowid
-            await self._conn.commit()
+            await conn.commit()
             return row_id
         except Exception as exc:
             raise StorageError(f"write_summary failed: {exc}") from exc
@@ -436,8 +434,8 @@ class DatabaseManager(BaseStorage):
     async def get_recent_observations(
         self, session_id: int, limit: int = 50
     ) -> list[dict]:
-        await self._ensure_init()
-        async with self._conn.execute(
+        conn = await self._ensure_init()
+        async with conn.execute(
             """SELECT * FROM observations WHERE session_id = ?
                ORDER BY created_at DESC LIMIT ?""",
             (session_id, limit),
@@ -447,6 +445,8 @@ class DatabaseManager(BaseStorage):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    async def _ensure_init(self) -> None:
+    async def _ensure_init(self) -> aiosqlite.Connection:
         if self._conn is None:
             await self.init()
+        assert self._conn is not None
+        return self._conn

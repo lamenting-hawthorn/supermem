@@ -148,7 +148,7 @@ class TestAuthOk:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestRecallHybridTool:
+class TestSupermemHybridTool:
     """supermem_hybrid() tool handler."""
 
     @pytest.mark.asyncio

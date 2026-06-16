@@ -67,7 +67,10 @@ class MemoryCompressor:
                 f"[{o.get('type', 'obs')} id={o.get('id')}] {o.get('content', '')[:800]}"
                 for o in obs_list
             )
-            summary = await self._model_client.chat_completion(
+            model_client = self._model_client
+            if model_client is None:
+                return
+            summary = await model_client.chat_completion(
                 messages=[
                     {
                         "role": "user",

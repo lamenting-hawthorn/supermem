@@ -131,7 +131,7 @@ def _format_python_code_with_black(code: str) -> str:
 
         if needs_wrapping:
             # Wrap in a function to make it valid Python for Black
-            wrapped_code = f"def temp_function():\n" + "\n".join(
+            wrapped_code = "def temp_function():\n" + "\n".join(
                 f"    {line}" for line in lines
             )
 
@@ -154,7 +154,7 @@ def _format_python_code_with_black(code: str) -> str:
                     if line.strip()
                 ).strip()
                 return formatted_code
-            except:
+            except BaseException:
                 # If wrapping fails, try formatting as-is
                 pass
 
@@ -169,7 +169,7 @@ def _format_python_code_with_black(code: str) -> str:
         )
         return formatted_code
 
-    except (black.InvalidInput, ValueError, SyntaxError, Exception) as e:
+    except (black.InvalidInput, ValueError, SyntaxError, Exception):
         # If Black fails to format (e.g., invalid syntax), return original code
         # This ensures we don't break the training pipeline
         return code

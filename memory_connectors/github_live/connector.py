@@ -785,16 +785,16 @@ class GitHubLiveConnector(BaseMemoryConnector):
         self._index_generated_files(entities_dir)
 
     def _index_generated_files(self, root_dir: Path) -> None:
-        """Index all generated .md files into the Recall storage layer."""
+        """Index all generated .md files into the supermem storage layer."""
         try:
             from supermem.indexer.vault import VaultIndexer
 
             md_paths = list(root_dir.rglob("*.md"))
             if md_paths:
                 VaultIndexer.index_paths(md_paths)
-                print(f"🔍 Indexed {len(md_paths)} files into Recall storage")
+                print(f"🔍 Indexed {len(md_paths)} files into supermem storage")
         except Exception as e:
-            print(f"⚠️ Could not index files into Recall storage: {e}")
+            print(f"⚠️ Could not index files into supermem storage: {e}")
 
     def _generate_index_file(
         self, entities_dir: Path, organized_data: Dict[str, Any]
