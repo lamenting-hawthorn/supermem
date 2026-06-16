@@ -27,14 +27,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # Ruff and mypy are invoked via pinned uvx tools instead of `uv run`
+      # because they are CI tools, not runtime package dependencies.
       - name: Ruff lint
-        run: uv run ruff check supermem/ agent/ mcp_server/ --output-format=github
+        run: uvx --from ruff==0.15.12 ruff check supermem/ agent/ mcp_server/ --output-format=github
 
       - name: Check formatting (black)
         run: uv run black --check .
 
       - name: mypy type-check
-        run: uv run mypy supermem/ --ignore-missing-imports --follow-imports=skip --no-error-summary
+        run: uvx --from mypy==1.20.2 mypy supermem/ --ignore-missing-imports --follow-imports=skip --no-error-summary
 
       - name: pytest with coverage
         run: |
