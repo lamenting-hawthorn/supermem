@@ -99,16 +99,16 @@ class NotionConnector(BaseMemoryConnector):
 
         print(f"✅ Generated {total_files} page files across {len(topic_pages)} topics")
 
-        # Index all generated markdown files into Recall storage
+        # Index all generated markdown files into supermem storage
         try:
             from supermem.indexer.vault import VaultIndexer
 
             md_paths = list(entities_dir.rglob("*.md"))
             if md_paths:
                 VaultIndexer.index_paths(md_paths)
-                print(f"🔍 Indexed {len(md_paths)} files into Recall storage")
+                print(f"🔍 Indexed {len(md_paths)} files into supermem storage")
         except Exception as e:
-            print(f"⚠️ Could not index files into Recall storage: {e}")
+            print(f"⚠️ Could not index files into supermem storage: {e}")
 
     def _generate_user_md(self, workspace, topic_pages) -> None:
         """Generate or update user.md file."""

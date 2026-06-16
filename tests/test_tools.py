@@ -23,7 +23,6 @@ from agent.tools import (
     get_size,
 )
 
-
 # ---------------------------------------------------------------------------
 # create_file
 # ---------------------------------------------------------------------------
@@ -113,10 +112,10 @@ class TestUpdateFile:
     def test_replaces_content(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")
         create_file(path, "Hello World")
-        result = update_file(path, "World", "Recall")
+        result = update_file(path, "World", "supermem")
         assert result is True
         with open(path) as f:
-            assert f.read() == "Hello Recall"
+            assert f.read() == "Hello supermem"
 
     def test_returns_error_when_old_content_not_found(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")

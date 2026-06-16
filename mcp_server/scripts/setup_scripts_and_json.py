@@ -1,4 +1,6 @@
-import os, shutil, json
+import os
+import shutil
+import json
 
 # Constants
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

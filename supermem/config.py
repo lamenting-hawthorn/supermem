@@ -1,6 +1,6 @@
-"""Centralized configuration for Recall v2.
+"""Centralized configuration for supermem.
 
-All environment variables consumed by Recall are defined here.
+All environment variables consumed by supermem are defined here.
 Other modules import from this file — they do NOT call os.getenv() directly.
 """
 

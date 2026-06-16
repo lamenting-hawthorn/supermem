@@ -1,4 +1,4 @@
-"""LLM provider implementations for Recall v2."""
+"""LLM provider implementations for supermem."""
 
 from supermem.model.base import get_client_for_provider
 

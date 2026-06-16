@@ -1,8 +1,8 @@
 """
-Recall session learning — Stop hook.
+supermem session learning — Stop hook.
 
 On Claude Code session stop, extracts the last substantive assistant
-response and writes it as an observation to the Recall SQLite DB.
+response and writes it as an observation to the supermem SQLite DB.
 This captures what Claude actually did/decided, without requiring the
 user to manually run /self-learn.
 

@@ -11,7 +11,6 @@ import pytest
 from agent.agent import Agent
 from agent.schemas import ChatMessage, Role, AgentResponse
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

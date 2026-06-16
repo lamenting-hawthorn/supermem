@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-_COMPRESS_PROMPT = """You are a memory compression agent for Recall.
+_COMPRESS_PROMPT = """You are a memory compression agent for supermem.
 Compress the following recent observations into a single dense summary.
 Keep all important facts, decisions, entities, and relationships.
 Remove redundancy. Write in the third person. Be concise but complete.
@@ -67,7 +67,10 @@ class MemoryCompressor:
                 f"[{o.get('type', 'obs')} id={o.get('id')}] {o.get('content', '')[:800]}"
                 for o in obs_list
             )
-            summary = await self._model_client.chat_completion(
+            model_client = self._model_client
+            if model_client is None:
+                return
+            summary = await model_client.chat_completion(
                 messages=[
                     {
                         "role": "user",

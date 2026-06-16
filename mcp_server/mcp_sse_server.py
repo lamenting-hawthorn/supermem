@@ -8,10 +8,9 @@ import asyncio
 import json
 import os
 import sys
-from typing import Dict, Any, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
@@ -22,7 +21,7 @@ if REPO_ROOT not in sys.path:
 
 # Try to import FastMCP version first (for compatibility), fall back to direct Agent usage
 try:
-    from mcp_server.server import use_memory_agent
+    import mcp_server.server as _fastmcp_server  # noqa: F401, E402
 
     FASTMCP_AVAILABLE = True
     print("✅ FastMCP version available")
@@ -31,8 +30,8 @@ except Exception as e:
     print(f"⚠️  FastMCP not available ({e}), using direct Agent")
 
 # Import agent components for fallback
-import platform
-from agent import Agent
+import platform  # noqa: E402
+from agent import Agent  # noqa: E402
 
 IS_DARWIN = platform.system() == "Darwin"
 FILTERS_PATH = os.path.join(REPO_ROOT, ".filters")

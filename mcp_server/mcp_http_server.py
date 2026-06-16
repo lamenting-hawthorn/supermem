@@ -8,10 +8,9 @@ import asyncio
 import json
 import os
 import sys
-from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import Response
 import uvicorn
 
 # Add the repository root to sys.path
@@ -20,8 +19,8 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 # Import the core components from the agent package
-import platform
-from agent import Agent
+import platform  # noqa: E402
+from agent import Agent  # noqa: E402
 
 # Import settings
 try:

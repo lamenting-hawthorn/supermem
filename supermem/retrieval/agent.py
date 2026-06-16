@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from supermem.core.retriever import BaseRetriever, RetrievalResult
 from supermem.logging import get_logger
 
@@ -27,7 +29,7 @@ class AgentRetriever(BaseRetriever):
     ) -> None:
         self._memory_path = memory_path
         self._db = db
-        self._agent = None  # lazy-initialized on first call
+        self._agent: Any = None  # lazy-initialized on first call
 
     @property
     def tier(self) -> int:

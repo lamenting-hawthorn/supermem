@@ -4,16 +4,12 @@ HTTP wrapper for mem-agent MCP server.
 Provides HTTP/SSE endpoint for ChatGPT integration while keeping the core stdio server unchanged.
 """
 
-import asyncio
-import json
 import os
 import sys
-from typing import Dict, Any, Optional
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 import uvicorn
-from contextlib import asynccontextmanager
 
 # Add the repository root to sys.path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -21,7 +17,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 # Import the existing MCP server components
-from mcp_server.server import mcp, use_memory_agent
+from mcp_server.server import use_memory_agent  # noqa: E402
 
 
 class MCPHTTPWrapper:

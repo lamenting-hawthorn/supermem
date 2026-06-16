@@ -26,7 +26,6 @@ import pytest_asyncio
 import mcp_server.server as srv
 from supermem.core.retriever import RetrievalResult
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Pure helpers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,7 +148,7 @@ class TestAuthOk:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestRecallHybridTool:
+class TestSupermemHybridTool:
     """supermem_hybrid() tool handler."""
 
     @pytest.mark.asyncio

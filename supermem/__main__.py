@@ -1,4 +1,4 @@
-"""Recall v2 CLI entry point.
+"""supermem CLI entry point.
 
 Commands:
   supermem serve            Start the MCP server (stdio transport)
@@ -22,7 +22,6 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import subprocess
 import sys
@@ -39,7 +38,7 @@ if str(_ROOT) not in sys.path:
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the MCP server. Optionally also start the Worker HTTP service."""
     if args.worker:
-        print("Starting Recall MCP server + Worker HTTP API…", flush=True)
+        print("Starting supermem MCP server + Worker HTTP API…", flush=True)
         # Start worker in a subprocess alongside the MCP server
         worker_proc = subprocess.Popen(
             [sys.executable, "-m", "worker.app"],
@@ -146,8 +145,8 @@ def cmd_connect(args: argparse.Namespace) -> None:
         "chatgpt": "memory_connectors.chatgpt_history.connector.ChatGPTHistoryConnector",
         "notion": "memory_connectors.notion.connector.NotionConnector",
         "nuclino": "memory_connectors.nuclino.connector.NuclinoConnector",
-        "github": "memory_connectors.github.connector.GitHubConnector",
-        "google-docs": "memory_connectors.google_docs.connector.GoogleDocsConnector",
+        "github": "memory_connectors.github_live.connector.GitHubLiveConnector",
+        "google-docs": "memory_connectors.google_docs_live.connector.GoogleDocsLiveConnector",
     }
 
     fqcn = connector_map.get(connector_type)
@@ -174,14 +173,14 @@ def cmd_connect(args: argparse.Namespace) -> None:
 
     connector = cls(output_path=str(SUPERMEM_VAULT_PATH), **kwargs)
     print(f"Running {connector_type} connector → {SUPERMEM_VAULT_PATH}", flush=True)
-    connector.run(source=source, max_items=max_items)
+    connector.connect(source_path=source, max_items=max_items)
     print("Import complete.", flush=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="supermem",
-        description="Recall v2 — persistent AI memory without RAG",
+        description="supermem — persistent AI memory without RAG",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

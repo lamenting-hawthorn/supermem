@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from supermem.config import SUPERMEM_KUZU_PATH
-from supermem.errors import GraphTraversalError
 from supermem.logging import get_logger
 
 log = get_logger(__name__)

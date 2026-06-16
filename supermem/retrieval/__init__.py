@@ -1,4 +1,4 @@
-"""Four-tier hybrid retrieval for Recall v2."""
+"""Four-tier hybrid retrieval for supermem."""
 
 from supermem.retrieval.fts import FTSRetriever
 from supermem.retrieval.graph import GraphRetriever

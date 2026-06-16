@@ -15,7 +15,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from supermem.core.retriever import BaseRetriever, RetrievalResult
+from supermem.core.retriever import RetrievalResult
 from supermem.logging import get_logger
 
 if TYPE_CHECKING:
