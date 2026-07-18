@@ -56,6 +56,23 @@ def _run_user_code(
     Execute code under sandboxed conditions (limited file access, optional installs,
     and blacklisting) and return the resulting locals and an error message.
     """
+    orig_open = builtins.open
+    orig_import = builtins.__import__
+    orig_remove = os.remove
+    orig_rename = os.rename
+    original_attrs: list[tuple[object, str, object]] = []
+
+    def restore_state() -> None:
+        builtins.open = orig_open
+        builtins.__import__ = orig_import
+        os.remove = orig_remove
+        os.rename = orig_rename
+        for obj, attr_name, value in reversed(original_attrs):
+            try:
+                setattr(obj, attr_name, value)
+            except Exception:
+                pass
+
     try:
         # Optional: apply working directory and file access restriction
         if allowed_path:
@@ -68,7 +85,6 @@ def _run_user_code(
                     "Could not change working directory to %s: %s", allowed, e
                 )
             # Wrap builtins.open to restrict file access
-            orig_open = builtins.open
 
             def secure_open(file, *args, **kwargs):
                 """Open that restricts file access to allowed_path."""
@@ -87,7 +103,6 @@ def _run_user_code(
 
             # Optionally, restrict other file-related functions (remove, rename, etc.) similarly
             # We'll patch a couple of common ones as an example:
-            orig_remove = os.remove
 
             def secure_remove(path, *args, **kwargs):
                 full_path = os.path.abspath(path)
@@ -98,8 +113,6 @@ def _run_user_code(
                 return orig_remove(path, *args, **kwargs)
 
             os.remove = secure_remove
-
-            orig_rename = os.rename
 
             def secure_rename(src, dst, *args, **kwargs):
                 full_src = os.path.abspath(src)
@@ -114,6 +127,8 @@ def _run_user_code(
 
             os.rename = secure_rename
 
+        install_runner = subprocess.run
+
         # Apply blacklist restrictions by removing or disabling blacklisted builtins or attributes
         if blacklist:
             for name in blacklist:
@@ -127,6 +142,9 @@ def _run_user_code(
                     # If module is imported in sandbox, remove the attribute
                     if mod_obj and hasattr(mod_obj, attr_name):
                         try:
+                            original_attrs.append(
+                                (mod_obj, attr_name, getattr(mod_obj, attr_name))
+                            )
                             setattr(
                                 mod_obj, attr_name, None
                             )  # simple way: nullify the attribute
@@ -135,12 +153,11 @@ def _run_user_code(
                 else:
                     # It's a built-in or global name; remove from builtins if present
                     if name in builtins.__dict__:
+                        original_attrs.append((builtins, name, builtins.__dict__[name]))
                         builtins.__dict__[name] = (
                             None  # or we could del, but setting None prevents use
                         )
             # Additionally, we can ensure __builtins__ in the exec env doesn't contain them (handled below in exec)
-
-        orig_import = builtins.__import__
 
         def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
             root_name = name.split(".")[0]
@@ -156,7 +173,7 @@ def _run_user_code(
                 pkg = name.split(".")[0]
                 logger.info("Restricted executor: attempting to install '%s'", pkg)
                 try:
-                    subprocess.run(
+                    install_runner(
                         [sys.executable, "-m", "pip", "install", pkg],
                         check=True,
                         stdout=subprocess.DEVNULL,
@@ -217,9 +234,11 @@ def _run_user_code(
         if log:
             logger.info("Sandbox execution finished")
 
+        restore_state()
         return safe_locals, error_msg
 
     except Exception as e:
+        restore_state()
         # Catch any unhandled exceptions in the worker process
         if log:
             logger.error(

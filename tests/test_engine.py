@@ -153,3 +153,29 @@ class TestRestrictedExecutorHardening:
         locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
         assert locals_dict.get("escaped") is False
         assert not outside.exists()
+
+
+def test_allow_installs_keeps_install_runner_when_subprocess_blacklisted(monkeypatch):
+    import sys
+    import types
+    import agent.engine as engine
+
+    module_name = "supermem_fake_install_target"
+    sys.modules.pop(module_name, None)
+
+    def fake_run(*args, **kwargs):
+        sys.modules[module_name] = types.ModuleType(module_name)
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(engine.subprocess, "run", fake_run)
+    locals_dict, error = engine._run_user_code(
+        f"import {module_name}\ninstalled = True",
+        allow_installs=True,
+        allowed_path="",
+        blacklist=["subprocess.run"],
+        available_functions={},
+    )
+
+    assert error is None
+    assert locals_dict["installed"] is True
+    sys.modules.pop(module_name, None)

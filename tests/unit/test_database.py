@@ -279,3 +279,55 @@ async def test_active_obs_ids_preserves_order_and_filters_retracted(
     await db.retract_observation(second)
 
     assert await db.active_obs_ids([third, second, first]) == [third, first]
+
+
+@pytest.mark.asyncio
+async def test_timeline_filters_retracted_neighbors(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    before = await db.write_observation("before active", session_id=sid)
+    stale = await db.write_observation("middle stale", session_id=sid)
+    after = await db.write_observation("after active", session_id=sid)
+    await db.retract_observation(stale, reason="contains sensitive token")
+
+    timeline = await db.get_timeline(before, window=5)
+    ids = [row["id"] for row in timeline]
+    assert stale not in ids
+    assert after in ids
+
+
+@pytest.mark.asyncio
+async def test_recent_observations_filters_retracted_rows(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    active = await db.write_observation("active recent", session_id=sid)
+    stale = await db.write_observation("stale recent", session_id=sid)
+    await db.retract_observation(stale)
+
+    rows = await db.get_recent_observations(sid, limit=10)
+    ids = [row["id"] for row in rows]
+    assert active in ids
+    assert stale not in ids
+
+
+@pytest.mark.asyncio
+async def test_retract_reason_is_not_indexed(db: DatabaseManager) -> None:
+    oid = await db.write_observation("temporary sensitive record")
+    await db.retract_observation(oid, reason="SSN 123-45-6789")
+
+    assert await db.fts_search("123") == []
+    async with db._conn.execute(
+        "SELECT reason FROM retraction_audit WHERE obs_id = ?", (oid,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row[0] == "SSN 123-45-6789"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_after_retraction_creates_active_row(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    stale = await db.write_observation("same fact", session_id=sid)
+    await db.retract_observation(stale)
+
+    fresh = await db.write_observation("same fact", session_id=sid)
+
+    assert fresh != stale
+    assert fresh in await db.fts_search("same")

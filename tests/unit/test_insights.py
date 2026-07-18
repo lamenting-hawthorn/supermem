@@ -52,3 +52,29 @@ def test_summarize_days_groups_recent_observations() -> None:
     assert summaries[0]["observation_count"] == 2
     assert summaries[0]["open_task_count"] == 1
     assert "release" in summaries[0]["keywords"]
+
+
+def test_extract_open_tasks_preserves_negated_done_items() -> None:
+    observations = [
+        {"id": 3, "created_at": time.time(), "content": "not done: email Alice"},
+        {
+            "id": 4,
+            "created_at": time.time(),
+            "content": "TODO: review migration is done notes",
+        },
+    ]
+
+    tasks = extract_open_tasks(observations)
+
+    assert {task["obs_id"] for task in tasks} == {3, 4}
+
+
+def test_summarize_days_counts_all_open_tasks() -> None:
+    observations = [
+        {"id": i, "created_at": time.time(), "content": f"TODO: follow up item {i}"}
+        for i in range(8)
+    ]
+
+    summaries = summarize_days(observations, days=1)
+
+    assert summaries[0]["open_task_count"] == 8

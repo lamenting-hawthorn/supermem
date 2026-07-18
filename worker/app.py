@@ -43,7 +43,6 @@ from supermem.capture.observation import ObservationCapture
 from supermem.capture.session import SessionManager
 from supermem.config import (
     SUPERMEM_API_KEY,
-    SUPERMEM_AUTHORIZATION_SERVERS,
     SUPERMEM_DB_PATH,
     SUPERMEM_DEFAULT_TIER_LIMIT,
     SUPERMEM_VAULT_PATH,
@@ -121,16 +120,9 @@ async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
     resource = str(request.base_url).rstrip("/")
     payload: dict[str, Any] = {
         "resource": resource,
-        "scopes_supported": ["supermem.read", "supermem.write", "supermem.admin"],
         "bearer_methods_supported": ["header"],
+        "authorization_details": "Static SUPERMEM_API_KEY bearer tokens only; OAuth issuer, audience, and scope validation are not implemented yet.",
     }
-    if SUPERMEM_AUTHORIZATION_SERVERS:
-        payload["authorization_servers"] = SUPERMEM_AUTHORIZATION_SERVERS
-    else:
-        payload["warning"] = (
-            "Set SUPERMEM_AUTHORIZATION_SERVERS to advertise OAuth authorization "
-            "servers for remote MCP deployments."
-        )
     return JSONResponse(payload)
 
 

@@ -17,8 +17,16 @@ _TASK_RE = re.compile(
     r"\b(todo|to-do|task|action item|follow up|follow-up|need to|needs to|should|must|reply to|send|schedule|prepare|review|fix|ship|email|call)\b",
     re.IGNORECASE,
 )
-_DONE_RE = re.compile(
-    r"\b(done|completed|closed|resolved|shipped|sent|fixed|cancelled|canceled)\b",
+_DONE_MARKER_RE = re.compile(
+    r"^\s*(?:done|completed|closed|resolved|shipped|sent|fixed|cancelled|canceled)\s*[:\-]",
+    re.IGNORECASE,
+)
+_DONE_STATUS_RE = re.compile(
+    r"\b(?:status|state)\s*[:=]\s*(?:done|completed|closed|resolved|shipped|sent|fixed|cancelled|canceled)\b",
+    re.IGNORECASE,
+)
+_NEGATED_DONE_RE = re.compile(
+    r"\b(?:not|isn't|is not|wasn't|was not|still not)\s+(?:done|completed|closed|resolved|shipped|sent|fixed|cancelled|canceled)\b",
     re.IGNORECASE,
 )
 _OWNER_RE = re.compile(
@@ -70,6 +78,13 @@ class OpenTask:
     owner: str | None = None
 
 
+def _is_completed_task_clause(text: str) -> bool:
+    """Return True only for explicit task-completion markers, not incidental words."""
+    if _NEGATED_DONE_RE.search(text):
+        return False
+    return bool(_DONE_MARKER_RE.search(text) or _DONE_STATUS_RE.search(text))
+
+
 def _snippet(text: str, max_chars: int = 280) -> str:
     cleaned = " ".join(text.split())
     return (
@@ -84,7 +99,7 @@ def extract_open_tasks(observations: Iterable[dict], limit: int = 20) -> list[di
     candidates: list[OpenTask] = []
     for obs in observations:
         content = str(obs.get("content", ""))
-        if not content or _DONE_RE.search(content):
+        if not content or _is_completed_task_clause(content):
             continue
         match = _TASK_RE.search(content)
         if not match:
@@ -145,13 +160,13 @@ def summarize_days(observations: Iterable[dict], days: int = 7) -> list[dict]:
             w.lower() for w in _WORD_RE.findall(text) if w.lower() not in _STOPWORDS
         ]
         keywords = [word for word, _ in Counter(tags + words).most_common(8)]
-        tasks = extract_open_tasks(rows, limit=5)
+        all_tasks = extract_open_tasks(rows, limit=len(rows) or 1)
         summaries.append(
             {
                 "date": day,
                 "observation_count": len(rows),
                 "keywords": keywords,
-                "open_task_count": len(tasks),
+                "open_task_count": len(all_tasks),
                 "highlights": [
                     _snippet(str(row.get("content", "")), 180) for row in rows[:5]
                 ],

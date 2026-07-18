@@ -124,22 +124,27 @@ def _read_filters() -> str:
         return ""
 
 
-def _auth_ok(ctx: Context | None) -> bool:
-    """Return True if auth is disabled or the request carries a valid Bearer token.
+def _transport_is_stdio() -> bool:
+    return os.getenv("MCP_TRANSPORT", "stdio").strip().lower() == "stdio"
 
-    For stdio transport FastMCP has no HTTP headers, so auth is skipped (stdio
-    is a local pipe — the OS already restricts access). For HTTP/SSE transport,
-    the Bearer token is checked via the Starlette request object.
-    """
+
+def _auth_ok(ctx: Context | None) -> bool:
+    """Return True if auth is disabled, stdio is explicit, or Bearer auth passes."""
     if not SUPERMEM_API_KEY:
         return True  # auth disabled in personal mode
+    if ctx is None:
+        return _transport_is_stdio()
     try:
         request = ctx.get_http_request()
-        auth_header = request.headers.get("authorization", "")
-        return auth_header == f"Bearer {SUPERMEM_API_KEY}"
-    except Exception:
-        # No HTTP request context (stdio transport) — skip auth
-        return True
+    except RuntimeError:
+        return _transport_is_stdio()
+    except AttributeError:
+        return _transport_is_stdio()
+    except Exception as exc:
+        log.warning("auth_context_error", error=str(exc))
+        return False
+    auth_header = request.headers.get("authorization", "")
+    return auth_header == f"Bearer {SUPERMEM_API_KEY}"
 
 
 def _client_id(ctx: Context | None, tool_name: str) -> str:
@@ -165,6 +170,14 @@ def _guard_tool(ctx: Context | None, tool_name: str) -> str | None:
         return (
             f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
         )
+    return None
+
+
+def _validate_int_bounds(
+    value: int, name: str, minimum: int, maximum: int
+) -> str | None:
+    if value < minimum or value > maximum:
+        return f"{name} must be between {minimum} and {maximum}."
     return None
 
 
@@ -389,6 +402,12 @@ async def list_open_tasks(
     denial = _guard_tool(ctx, "list_open_tasks")
     if denial:
         return json.dumps({"error": denial, "tasks": []})
+    for error in (
+        _validate_int_bounds(days, "days", 1, 90),
+        _validate_int_bounds(limit, "limit", 1, 100),
+    ):
+        if error:
+            return json.dumps({"error": error, "tasks": []})
     if _ctx.db is None:
         return json.dumps({"error": "Database not initialised", "tasks": []})
     try:
@@ -414,6 +433,12 @@ async def suggest_followups(
     denial = _guard_tool(ctx, "suggest_followups")
     if denial:
         return json.dumps({"error": denial, "suggestions": []})
+    for error in (
+        _validate_int_bounds(days, "days", 1, 90),
+        _validate_int_bounds(limit, "limit", 1, 50),
+    ):
+        if error:
+            return json.dumps({"error": error, "suggestions": []})
     if _ctx.db is None:
         return json.dumps({"error": "Database not initialised", "suggestions": []})
     try:
@@ -444,6 +469,9 @@ async def list_day_summaries(
     denial = _guard_tool(ctx, "list_day_summaries")
     if denial:
         return json.dumps({"error": denial, "summaries": []})
+    error = _validate_int_bounds(days, "days", 1, 31)
+    if error:
+        return json.dumps({"error": error, "summaries": []})
     if _ctx.db is None:
         return json.dumps({"error": "Database not initialised", "summaries": []})
     try:

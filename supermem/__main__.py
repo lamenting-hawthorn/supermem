@@ -109,7 +109,7 @@ def _safe_restore_destination(root: Path, relative_name: str) -> Path:
         raise ValueError(f"Unsafe archive member path: {relative_name!r}")
     root_resolved = root.resolve()
     dest = (root_resolved / relative_name).resolve()
-    if dest != root_resolved and root_resolved not in dest.parents:
+    if not dest.is_relative_to(root_resolved):
         raise ValueError(f"Unsafe archive member path: {relative_name!r}")
     return dest
 

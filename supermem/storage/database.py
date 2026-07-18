@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS summaries (
     obs_ids_compressed  TEXT    NOT NULL DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS retraction_audit (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    obs_id          INTEGER NOT NULL,
+    created_at      REAL    NOT NULL DEFAULT (unixepoch('now', 'subsec')),
+    reason          TEXT,
+    FOREIGN KEY(obs_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS entity_metadata (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    UNIQUE NOT NULL,
@@ -106,8 +114,7 @@ class DatabaseManager(BaseStorage):
             self._conn = conn
             conn.row_factory = aiosqlite.Row
             await conn.executescript(_SCHEMA)
-            # Add expires_at column if this is an existing DB without it
-            for column, ddl in {
+            migration_ddls = {
                 "expires_at": "ALTER TABLE observations ADD COLUMN expires_at REAL",
                 "source_id": "ALTER TABLE observations ADD COLUMN source_id TEXT",
                 "source_span": "ALTER TABLE observations ADD COLUMN source_span TEXT",
@@ -118,11 +125,12 @@ class DatabaseManager(BaseStorage):
                 "trust_level": "ALTER TABLE observations ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unknown'",
                 "sensitivity": "ALTER TABLE observations ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'normal'",
                 "status": "ALTER TABLE observations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-            }.items():
-                try:
+            }
+            async with conn.execute("PRAGMA table_info(observations)") as cur:
+                existing_columns = {row[1] for row in await cur.fetchall()}
+            for column, ddl in migration_ddls.items():
+                if column not in existing_columns:
                     await conn.execute(ddl)
-                except Exception:
-                    pass  # column already exists — normal for new installs
             await conn.commit()
             # Purge expired observations on startup (lazy cleanup)
             await self._purge_expired()
@@ -254,10 +262,28 @@ class DatabaseManager(BaseStorage):
     ) -> int:
         conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        # Dedup: skip if identical content already recorded in this session
+        confidence = max(0.0, min(confidence, 1.0))
+        # Dedup only when content and lifecycle/provenance metadata match an active row.
         async with conn.execute(
-            "SELECT id FROM observations WHERE content_hash = ? AND session_id IS ?",
-            (content_hash, session_id),
+            """SELECT id FROM observations
+               WHERE content_hash = ? AND session_id IS ? AND type = ?
+                 AND source_id IS ? AND source_span IS ? AND observed_at IS ?
+                 AND valid_from IS ? AND valid_until IS ? AND confidence = ?
+                 AND trust_level = ? AND sensitivity = ? AND status = ?""",
+            (
+                content_hash,
+                session_id,
+                obs_type,
+                source_id,
+                source_span,
+                observed_at,
+                valid_from,
+                valid_until,
+                confidence,
+                trust_level,
+                sensitivity,
+                status,
+            ),
         ) as cur:
             existing = await cur.fetchone()
         if existing:
@@ -287,7 +313,7 @@ class DatabaseManager(BaseStorage):
                     observed_at,
                     valid_from,
                     valid_until,
-                    max(0.0, min(confidence, 1.0)),
+                    confidence,
                     trust_level,
                     sensitivity,
                     status,
@@ -295,10 +321,11 @@ class DatabaseManager(BaseStorage):
                 ),
             ) as cur:
                 obs_id = cur.lastrowid
-            await conn.execute(
-                "INSERT INTO content_fts (obs_id, content) VALUES (?, ?)",
-                (obs_id, content),
-            )
+            if status == "active":
+                await conn.execute(
+                    "INSERT INTO content_fts (obs_id, content) VALUES (?, ?)",
+                    (obs_id, content),
+                )
             await conn.commit()
             return obs_id
         except Exception as exc:
@@ -358,7 +385,7 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         try:
             async with conn.execute(
-                "SELECT created_at, session_id FROM observations WHERE id = ?",
+                "SELECT created_at, session_id FROM observations WHERE id = ? AND status = 'active'",
                 (obs_id,),
             ) as cur:
                 anchor = await cur.fetchone()
@@ -367,12 +394,12 @@ class DatabaseManager(BaseStorage):
             ts, sid = anchor[0], anchor[1]
             before_query = """
                 SELECT * FROM observations
-                WHERE created_at < ? AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at < ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at DESC LIMIT ?
             """
             after_query = """
                 SELECT * FROM observations
-                WHERE created_at >= ? AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at >= ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at ASC LIMIT ?
             """
             async with conn.execute(before_query, (ts, sid, sid, window)) as cur:
@@ -491,7 +518,7 @@ class DatabaseManager(BaseStorage):
     ) -> list[dict]:
         conn = await self._ensure_init()
         async with conn.execute(
-            """SELECT * FROM observations WHERE session_id = ?
+            """SELECT * FROM observations WHERE session_id = ? AND status = 'active'
                ORDER BY created_at DESC LIMIT ?""",
             (session_id, limit),
         ) as cur:
@@ -499,23 +526,28 @@ class DatabaseManager(BaseStorage):
         return [dict(r) for r in reversed(rows)]
 
     async def retract_observation(self, obs_id: int, reason: str | None = None) -> bool:
-        """Mark an observation retracted and remove it from retrieval indexes."""
+        """Mark an observation retracted and store a non-retrievable audit reason."""
         conn = await self._ensure_init()
-        async with conn.execute(
-            "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
-        ) as cur:
-            updated = cur.rowcount > 0
-        if updated:
+        try:
+            await conn.execute("BEGIN")
+            async with conn.execute(
+                "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
+            ) as cur:
+                updated = cur.rowcount > 0
+            if not updated:
+                await conn.rollback()
+                return False
             await conn.execute("DELETE FROM content_fts WHERE obs_id = ?", (obs_id,))
             if reason:
-                await self.write_observation(
-                    content=f"Retracted observation {obs_id}: {reason}",
-                    obs_type="retraction",
-                    status="active",
-                    source_id=f"observation:{obs_id}",
+                await conn.execute(
+                    "INSERT INTO retraction_audit (obs_id, reason) VALUES (?, ?)",
+                    (obs_id, reason),
                 )
             await conn.commit()
-        return updated
+            return True
+        except Exception as exc:
+            await conn.rollback()
+            raise StorageError(f"retract_observation failed: {exc}") from exc
 
     async def get_recent_observations_by_age(
         self, days: int = 7, limit: int = 500
