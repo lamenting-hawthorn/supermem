@@ -14,13 +14,10 @@ TODO(arch): Long-term, extract global state into a ServerContext dataclass
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import pytest_asyncio
 
 # ── Module under test ─────────────────────────────────────────────────────────
 import mcp_server.server as srv
@@ -136,10 +133,11 @@ class TestAuthOk:
         ctx.get_http_request.return_value = mock_request
         assert srv._auth_ok(ctx) is False
 
-    def test_auth_passes_stdio_no_http_request(self, monkeypatch):
+    def test_auth_passes_explicit_stdio_no_http_request(self, monkeypatch):
         monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
+        monkeypatch.setenv("MCP_TRANSPORT", "stdio")
         ctx = MagicMock()
-        ctx.get_http_request.side_effect = Exception("no HTTP context")
+        ctx.get_http_request.side_effect = RuntimeError("no HTTP context")
         assert srv._auth_ok(ctx) is True
 
 
@@ -196,6 +194,31 @@ class TestSupermemHybridTool:
         data = json.loads(result)
         assert data["obs_ids"] == []
         assert data["observations"] == []
+
+
+class TestRetractObservationTool:
+    """retract_observation() tool handler."""
+
+    @pytest.mark.asyncio
+    async def test_retract_success(self, monkeypatch):
+        mock_db = AsyncMock()
+        mock_db.retract_observation.return_value = True
+        mock_chroma = AsyncMock()
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        monkeypatch.setattr(srv._ctx, "chroma", mock_chroma)
+        result = await srv.retract_observation.fn(obs_id=42, reason="stale")
+        data = json.loads(result)
+        assert data["retracted"] is True
+        mock_db.retract_observation.assert_awaited_once_with(42, reason="stale")
+        mock_chroma.delete_obs.assert_awaited_once_with(42)
+
+    @pytest.mark.asyncio
+    async def test_retract_no_db(self, monkeypatch):
+        monkeypatch.setattr(srv._ctx, "db", None)
+        result = await srv.retract_observation.fn(obs_id=42)
+        data = json.loads(result)
+        assert data["retracted"] is False
+        assert "error" in data
 
 
 class TestGetTimelineTool:
@@ -519,3 +542,53 @@ class TestSettings:
         assert isinstance(MEMORY_AGENT_NAME, str)
         assert isinstance(MLX_4BIT_MEMORY_AGENT_NAME, str)
         assert isinstance(MLX_8BIT_MEMORY_AGENT_NAME, str)
+
+
+class TestInsightToolValidation:
+    @pytest.mark.asyncio
+    async def test_list_open_tasks_rejects_invalid_bounds_before_db(self, monkeypatch):
+        mock_db = AsyncMock()
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        result = await srv.list_open_tasks.fn(days=0, limit=20)
+        data = json.loads(result)
+        assert "error" in data
+        mock_db.get_recent_observations_by_age.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_suggest_followups_rejects_excessive_limit(self, monkeypatch):
+        mock_db = AsyncMock()
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        result = await srv.suggest_followups.fn(days=14, limit=51)
+        data = json.loads(result)
+        assert "error" in data
+        mock_db.get_recent_observations_by_age.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_day_summaries_rejects_excessive_days(self, monkeypatch):
+        mock_db = AsyncMock()
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        result = await srv.list_day_summaries.fn(days=32)
+        data = json.loads(result)
+        assert "error" in data
+        mock_db.get_recent_observations_by_age.assert_not_called()
+
+
+def test_auth_context_error_denies_when_http_transport(monkeypatch):
+    monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret")
+    monkeypatch.setenv("MCP_TRANSPORT", "http")
+    ctx = MagicMock()
+    ctx.get_http_request.side_effect = RuntimeError("missing context")
+
+    assert srv._auth_ok(ctx) is False
+
+
+def test_rate_limit_bucket_is_shared_across_tools(monkeypatch):
+    srv._rate_buckets.clear()
+    monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "")
+    monkeypatch.setattr(srv, "SUPERMEM_RATE_LIMIT", 1)
+
+    assert srv._guard_tool(None, "supermem_hybrid") is None
+    denial = srv._guard_tool(None, "get_observations")
+
+    assert denial is not None
+    assert "rate_limit_error" in denial

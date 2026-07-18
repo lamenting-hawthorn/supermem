@@ -222,3 +222,22 @@ def test_connect_unknown_connector_exits():
     )
     with pytest.raises(SystemExit):
         cmd_connect(ns)
+
+
+def test_cmd_restore_rejects_path_traversal(tmp_path: Path):
+    import argparse
+    from supermem.__main__ import cmd_restore
+
+    archive = tmp_path / "evil.tar.gz"
+    outside = tmp_path / "evil.md"
+    payload = tmp_path / "payload.md"
+    payload.write_text("owned")
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(str(payload), arcname="vault/../evil.md")
+
+    ns = argparse.Namespace(archive=str(archive))
+    with patch("supermem.config.SUPERMEM_VAULT_PATH", tmp_path / "vault"):
+        with pytest.raises(SystemExit):
+            cmd_restore(ns)
+
+    assert not outside.exists()

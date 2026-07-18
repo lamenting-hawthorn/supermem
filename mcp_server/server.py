@@ -5,6 +5,10 @@ Tools:
   supermem_hybrid      — explicit tiered search with source_tier metadata
   get_timeline       — chronological context around an observation
   get_observations   — batch fetch full observation content by IDs
+  list_open_tasks    — local open-loop/task extraction
+  suggest_followups  — actionable follow-up suggestions
+  list_day_summaries — local daily summaries
+  retract_observation — mark a memory retracted/forgotten
 
 Auth:    Bearer token via SUPERMEM_API_KEY (disabled when unset).
 Rate:    SUPERMEM_RATE_LIMIT requests/min per client (default 60).
@@ -18,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import dataclasses
+import hashlib
 import json
 import os
 import socket
@@ -120,22 +125,62 @@ def _read_filters() -> str:
         return ""
 
 
-def _auth_ok(ctx: Context) -> bool:
-    """Return True if auth is disabled or the request carries a valid Bearer token.
+def _transport_is_stdio() -> bool:
+    return os.getenv("MCP_TRANSPORT", "stdio").strip().lower() == "stdio"
 
-    For stdio transport FastMCP has no HTTP headers, so auth is skipped (stdio
-    is a local pipe — the OS already restricts access). For HTTP/SSE transport,
-    the Bearer token is checked via the Starlette request object.
-    """
+
+def _auth_ok(ctx: Context | None) -> bool:
+    """Return True if auth is disabled, stdio is explicit, or Bearer auth passes."""
     if not SUPERMEM_API_KEY:
         return True  # auth disabled in personal mode
+    if ctx is None:
+        return _transport_is_stdio()
+    try:
+        request = ctx.get_http_request()
+    except RuntimeError:
+        return _transport_is_stdio()
+    except AttributeError:
+        return _transport_is_stdio()
+    except Exception as exc:
+        log.warning("auth_context_error", error=str(exc))
+        return False
+    auth_header = request.headers.get("authorization", "")
+    return auth_header == f"Bearer {SUPERMEM_API_KEY}"
+
+
+def _client_id(ctx: Context | None) -> str:
+    """Best-effort client identity for rate limiting, shared across all tools."""
+    if ctx is None:
+        return "local"
     try:
         request = ctx.get_http_request()
         auth_header = request.headers.get("authorization", "")
-        return auth_header == f"Bearer {SUPERMEM_API_KEY}"
+        if auth_header.startswith("Bearer "):
+            digest = hashlib.sha256(auth_header[7:].encode()).hexdigest()[:16]
+            return f"bearer:{digest}"
+        host = getattr(request.client, "host", "unknown")
+        return f"http:{host}"
     except Exception:
-        # No HTTP request context (stdio transport) — skip auth
-        return True
+        return "stdio"
+
+
+def _guard_tool(ctx: Context | None, tool_name: str) -> str | None:
+    """Apply common MCP auth and rate limiting; return an error string on denial."""
+    if not _auth_ok(ctx):
+        return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
+    if not _check_rate(_client_id(ctx)):
+        return (
+            f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
+        )
+    return None
+
+
+def _validate_int_bounds(
+    value: int, name: str, minimum: int, maximum: int
+) -> str | None:
+    if value < minimum or value > maximum:
+        return f"{name} must be between {minimum} and {maximum}."
+    return None
 
 
 # ── MCP application ───────────────────────────────────────────────────────────
@@ -165,13 +210,9 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
     bind_request_id(correlation_id)
     t0 = time.monotonic()
 
-    if not _auth_ok(ctx):
-        return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
-
-    if not _check_rate("use_memory_agent"):
-        return (
-            f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
-        )
+    denial = _guard_tool(ctx, "use_memory_agent")
+    if denial:
+        return denial
 
     # Apply legacy filters
     filters = _read_filters()
@@ -258,6 +299,9 @@ async def supermem_hybrid(
     Returns:
         JSON string with obs_ids, source_tier, latency_ms, and observation content.
     """
+    denial = _guard_tool(ctx, "supermem_hybrid")
+    if denial:
+        return json.dumps({"error": denial, "obs_ids": []})
     if _ctx.retriever is None:
         return json.dumps({"error": "HybridRetriever not initialised", "obs_ids": []})
 
@@ -307,6 +351,9 @@ async def get_timeline(
     Returns:
         JSON list of observation dicts ordered by created_at.
     """
+    denial = _guard_tool(ctx, "get_timeline")
+    if denial:
+        return json.dumps({"error": denial})
     if _ctx.retriever is None:
         return json.dumps({"error": "HybridRetriever not initialised"})
     try:
@@ -334,6 +381,9 @@ async def get_observations(
     Returns:
         JSON list of full observation records.
     """
+    denial = _guard_tool(ctx, "get_observations")
+    if denial:
+        return json.dumps({"error": denial})
     if _ctx.retriever is None:
         return json.dumps({"error": "HybridRetriever not initialised"})
     try:
@@ -342,6 +392,128 @@ async def get_observations(
     except Exception as exc:
         log.warning("get_observations_error", ids=ids, error=str(exc))
         return json.dumps({"error": str(exc)})
+
+
+@mcp.tool
+async def list_open_tasks(
+    days: int = 14,
+    limit: int = 20,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """List likely unresolved tasks/open loops from recent local memory."""
+    denial = _guard_tool(ctx, "list_open_tasks")
+    if denial:
+        return json.dumps({"error": denial, "tasks": []})
+    for error in (
+        _validate_int_bounds(days, "days", 1, 90),
+        _validate_int_bounds(limit, "limit", 1, 100),
+    ):
+        if error:
+            return json.dumps({"error": error, "tasks": []})
+    if _ctx.db is None:
+        return json.dumps({"error": "Database not initialised", "tasks": []})
+    try:
+        from supermem.capture.insights import extract_open_tasks
+
+        observations = await _ctx.db.get_recent_observations_by_age(
+            days=days, limit=1000
+        )
+        tasks = extract_open_tasks(observations, limit=limit)
+        return json.dumps({"days": days, "tasks": tasks}, indent=2, default=str)
+    except Exception as exc:
+        log.warning("list_open_tasks_error", error=str(exc))
+        return json.dumps({"error": str(exc), "tasks": []})
+
+
+@mcp.tool
+async def suggest_followups(
+    days: int = 14,
+    limit: int = 10,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Suggest next actions for likely unresolved tasks in recent memory."""
+    denial = _guard_tool(ctx, "suggest_followups")
+    if denial:
+        return json.dumps({"error": denial, "suggestions": []})
+    for error in (
+        _validate_int_bounds(days, "days", 1, 90),
+        _validate_int_bounds(limit, "limit", 1, 50),
+    ):
+        if error:
+            return json.dumps({"error": error, "suggestions": []})
+    if _ctx.db is None:
+        return json.dumps({"error": "Database not initialised", "suggestions": []})
+    try:
+        from supermem.capture.insights import (
+            extract_open_tasks,
+            suggest_followups as build,
+        )
+
+        observations = await _ctx.db.get_recent_observations_by_age(
+            days=days, limit=1000
+        )
+        tasks = extract_open_tasks(observations, limit=limit)
+        suggestions = build(tasks, limit=limit)
+        return json.dumps(
+            {"days": days, "suggestions": suggestions}, indent=2, default=str
+        )
+    except Exception as exc:
+        log.warning("suggest_followups_error", error=str(exc))
+        return json.dumps({"error": str(exc), "suggestions": []})
+
+
+@mcp.tool
+async def list_day_summaries(
+    days: int = 7,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Return local day summaries with keywords, highlights, and open-loop counts."""
+    denial = _guard_tool(ctx, "list_day_summaries")
+    if denial:
+        return json.dumps({"error": denial, "summaries": []})
+    error = _validate_int_bounds(days, "days", 1, 31)
+    if error:
+        return json.dumps({"error": error, "summaries": []})
+    if _ctx.db is None:
+        return json.dumps({"error": "Database not initialised", "summaries": []})
+    try:
+        from supermem.capture.insights import summarize_days
+
+        observations = await _ctx.db.get_recent_observations_by_age(
+            days=days, limit=2000
+        )
+        summaries = summarize_days(observations, days=days)
+        return json.dumps({"days": days, "summaries": summaries}, indent=2, default=str)
+    except Exception as exc:
+        log.warning("list_day_summaries_error", error=str(exc))
+        return json.dumps({"error": str(exc), "summaries": []})
+
+
+@mcp.tool
+async def retract_observation(
+    obs_id: int,
+    reason: str = "",
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Retract an observation so it no longer appears in retrieval results."""
+    denial = _guard_tool(ctx, "retract_observation")
+    if denial:
+        return json.dumps({"error": denial, "retracted": False})
+    if _ctx.db is None:
+        return json.dumps({"error": "Database not initialised", "retracted": False})
+    try:
+        retracted = await _ctx.db.retract_observation(obs_id, reason=reason or None)
+        if retracted and _ctx.chroma is not None:
+            try:
+                await _ctx.chroma.delete_obs(obs_id)
+            except Exception as exc:
+                log.warning(
+                    "retract_vector_delete_failed", obs_id=obs_id, error=str(exc)
+                )
+        return json.dumps({"obs_id": obs_id, "retracted": retracted}, indent=2)
+    except Exception as exc:
+        log.warning("retract_observation_error", obs_id=obs_id, error=str(exc))
+        return json.dumps({"error": str(exc), "retracted": False})
 
 
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────

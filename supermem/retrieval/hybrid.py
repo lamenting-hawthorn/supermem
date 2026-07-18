@@ -106,7 +106,7 @@ class HybridRetriever:
                 if r1.obs_ids:
                     highest_tier = 1
 
-            all_ids = _merge(all_ids, tier1_ids)
+            all_ids = await self._active_ids(_merge(all_ids, tier1_ids))
             if len(all_ids) >= min_results and tier_limit <= 1:
                 return self._build(all_ids[:limit], highest_tier, t0)
 
@@ -120,7 +120,7 @@ class HybridRetriever:
                     exclude_ids=set(all_ids),
                     limit=limit,
                 )
-                all_ids = _merge(all_ids, r2.obs_ids)
+                all_ids = await self._active_ids(_merge(all_ids, r2.obs_ids))
                 if r2.obs_ids:
                     highest_tier = max(highest_tier, 2)
 
@@ -129,20 +129,40 @@ class HybridRetriever:
 
         # ── Tier 4: Agent fallback ────────────────────────────────────────────
         if tier_limit >= 4:
-            log.info("tier4_agent_fallback", query=query, prior_results=len(all_ids))
-            r4 = await self._agent.search(query, limit=1)
-            new_ids = [i for i in r4.obs_ids if i not in set(all_ids)]
-            all_ids = _merge(all_ids, new_ids)
-            if new_ids:
-                highest_tier = 4
+            if await self._has_retracted_observation_match(query):
+                log.warning(
+                    "tier4_agent_fallback_skipped",
+                    reason="retracted observations may still exist in vault",
+                    prior_results=len(all_ids),
+                )
+            else:
+                log.info(
+                    "tier4_agent_fallback", query=query, prior_results=len(all_ids)
+                )
+                r4 = await self._agent.search(query, limit=1)
+                new_ids = [i for i in r4.obs_ids if i not in set(all_ids)]
+                all_ids = await self._active_ids(_merge(all_ids, new_ids))
+                if new_ids:
+                    highest_tier = 4
 
-        return self._build(all_ids[:limit], highest_tier, t0)
+        return self._build((await self._active_ids(all_ids))[:limit], highest_tier, t0)
 
     # ── Convenience pass-throughs ─────────────────────────────────────────────
 
     async def get_observations(self, ids: list[int]) -> list[dict]:
         """Batch fetch full observation records by IDs."""
         return await self._db.get_observations(ids)
+
+    async def _active_ids(self, ids: list[int]) -> list[int]:
+        """Filter candidate ids through the database lifecycle status."""
+        return await self._db.active_obs_ids(ids)
+
+    async def _has_retracted_observation_match(self, query: str) -> bool:
+        """Detect whether Tier 4 may rehydrate matching retracted vault facts."""
+        checker = getattr(self._db, "has_retracted_observation_match", None)
+        if checker is None:
+            return False
+        return await checker(query)
 
     async def get_timeline(self, obs_id: int, window: int = 5) -> list[dict]:
         """Chronological context around an observation."""
