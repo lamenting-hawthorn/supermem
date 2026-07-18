@@ -92,6 +92,10 @@ Query
 | `supermem_hybrid` | `query: str`, `tier_limit: int = 4` | JSON with `obs_ids`, `source_tier`, `latency_ms` | Preferred for programmatic use. Token-efficient — returns IDs first |
 | `get_observations` | `ids: list[int]` | JSON array of observation dicts | Fetch full content for specific IDs |
 | `get_timeline` | `obs_id: int`, `window: int = 5` | JSON array of chronological observations | Context around a specific observation |
+| `list_open_tasks` | `days: int = 14`, `limit: int = 20` | JSON with likely unresolved tasks | Local heuristic open-loop inbox inspired by ambient memory tools |
+| `suggest_followups` | `days: int = 14`, `limit: int = 10` | JSON with next-action suggestions | Turns open tasks into concise follow-up prompts |
+| `list_day_summaries` | `days: int = 7` | JSON day summaries | Keywords, highlights, and open-loop counts from recent observations |
+| `retract_observation` | `obs_id: int`, `reason: str = ""` | JSON retraction status | Marks stale or incorrect memories as retracted so retrieval ignores them |
 
 ### Progressive Disclosure Pattern
 
@@ -177,6 +181,7 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/.well-known/oauth-protected-resource` | GET | RFC 9728-style metadata for remote MCP discovery |
 | `/health` | GET | `{"status":"ok","db":true,"graph":false,"vector":false}` |
 | `/sessions` | GET | Paginated session list with summaries |
 | `/observations` | GET | Filter by session/date/type |
@@ -184,8 +189,14 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 | `/index/rebuild` | POST | Reindex entire vault |
 | `/backup` | GET | Streams vault + DB as `.tar.gz` |
 | `/stats` | GET | `{obs_count, entity_count, session_count, db_size_mb}` |
+| `/open-tasks` | GET | Local heuristic open-loop/task extraction |
+| `/followups` | GET | Follow-up suggestions derived from recent open tasks |
+| `/day-summaries` | GET | Local day summaries with keywords and highlights |
+| `/observations/{id}/retract` | POST | Mark an observation retracted so retrieval ignores it |
 
 Auth: `Authorization: Bearer <SUPERMEM_API_KEY>`. Disabled when env var is unset.
+
+> Remote HTTP deployments should set `SUPERMEM_API_KEY` and review [`SECURITY.md`](SECURITY.md). The default posture is trusted local MCP stdio, not internet-facing multi-tenant hosting.
 
 ---
 
