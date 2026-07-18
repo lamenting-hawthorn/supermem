@@ -156,6 +156,25 @@ class TestRestrictedExecutorHardening:
         assert not error
         assert locals_dict.get("escaped") is False
 
+    def test_import_hook_globals_cannot_symlink_outside_allowed_path(self, tmp_path):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        outside = tmp_path / "outside-link"
+        code = (
+            "try:\n"
+            "    leaked_os = __builtins__['__import__'].__globals__['os']\n"
+            f"    leaked_os.symlink('/etc/passwd', '{outside}')\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+
+        assert not error
+        assert locals_dict.get("escaped") is False
+        assert not outside.exists()
+
     def test_commonpath_blocks_prefix_escape(self, tmp_path):
         allowed = tmp_path / "vault"
         sibling = tmp_path / "vault-evil"

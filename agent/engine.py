@@ -179,9 +179,18 @@ def _run_user_code(
                 "makedirs",
                 "rmdir",
                 "unlink",
+                "chmod",
+                "lchmod",
+                "chown",
+                "lchown",
+                "utime",
+                "truncate",
+                "mkfifo",
+                "mknod",
+                "removedirs",
             ):
                 _patch_os_path_function(function_name, _single_path_wrapper)
-            for function_name in ("replace",):
+            for function_name in ("replace", "link", "symlink"):
                 _patch_os_path_function(function_name, _rename_like_wrapper)
             _patch_os_path_function("walk", _walk_wrapper)
 
