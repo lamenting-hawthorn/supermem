@@ -7,12 +7,16 @@ with zero degradation. Start with: supermem serve --worker
 Endpoints:
   GET  /              static/index.html — session viewer + search UI
   GET  /health        liveness + readiness
+  GET  /.well-known/oauth-protected-resource  RFC 9728 metadata stub
   GET  /sessions      recent sessions with summaries (paginated)
   GET  /observations  paginated observations, filterable
   POST /search        FTS5 + graph + vector hybrid search
   POST /index/rebuild re-index entire vault
   GET  /backup        stream tar.gz of vault + SQLite snapshot
   GET  /stats         memory metrics
+  GET  /open-tasks    local open-loop/task extraction
+  GET  /followups     actionable follow-up suggestions
+  GET  /day-summaries local daily summaries
 
 Auth: Bearer token from SUPERMEM_API_KEY header. Disabled when env var unset.
 """
@@ -38,6 +42,7 @@ from supermem.capture.observation import ObservationCapture
 from supermem.capture.session import SessionManager
 from supermem.config import (
     SUPERMEM_API_KEY,
+    SUPERMEM_AUTHORIZATION_SERVERS,
     SUPERMEM_DB_PATH,
     SUPERMEM_DEFAULT_TIER_LIMIT,
     SUPERMEM_VAULT_PATH,
@@ -107,6 +112,25 @@ async def index() -> HTMLResponse:
     if html_path.exists():
         return HTMLResponse(html_path.read_text())
     return HTMLResponse("<h1>Recall Worker</h1><p>static/index.html not found.</p>")
+
+
+@app.get("/.well-known/oauth-protected-resource")
+async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
+    """Return RFC 9728-style protected resource metadata for remote MCP clients."""
+    resource = str(request.base_url).rstrip("/")
+    payload: dict[str, Any] = {
+        "resource": resource,
+        "scopes_supported": ["supermem.read", "supermem.write", "supermem.admin"],
+        "bearer_methods_supported": ["header"],
+    }
+    if SUPERMEM_AUTHORIZATION_SERVERS:
+        payload["authorization_servers"] = SUPERMEM_AUTHORIZATION_SERVERS
+    else:
+        payload["warning"] = (
+            "Set SUPERMEM_AUTHORIZATION_SERVERS to advertise OAuth authorization "
+            "servers for remote MCP deployments."
+        )
+    return JSONResponse(payload)
 
 
 @app.get("/health")
@@ -230,6 +254,54 @@ async def search(
         )
     except Exception as exc:
         raise HTTPException(500, str(exc))
+
+
+@app.get("/open-tasks")
+async def open_tasks(
+    days: int = Query(14, ge=1, le=90),
+    limit: int = Query(20, ge=1, le=100),
+    _: None = Depends(_require_auth),
+) -> JSONResponse:
+    if not _db:
+        raise HTTPException(503, "Database not available")
+    from supermem.capture.insights import extract_open_tasks
+
+    observations = await _db.get_recent_observations_by_age(days=days, limit=1000)
+    return JSONResponse(
+        {"days": days, "tasks": extract_open_tasks(observations, limit=limit)}
+    )
+
+
+@app.get("/followups")
+async def followups(
+    days: int = Query(14, ge=1, le=90),
+    limit: int = Query(10, ge=1, le=50),
+    _: None = Depends(_require_auth),
+) -> JSONResponse:
+    if not _db:
+        raise HTTPException(503, "Database not available")
+    from supermem.capture.insights import extract_open_tasks, suggest_followups
+
+    observations = await _db.get_recent_observations_by_age(days=days, limit=1000)
+    tasks = extract_open_tasks(observations, limit=limit)
+    return JSONResponse(
+        {"days": days, "suggestions": suggest_followups(tasks, limit=limit)}
+    )
+
+
+@app.get("/day-summaries")
+async def day_summaries(
+    days: int = Query(7, ge=1, le=31),
+    _: None = Depends(_require_auth),
+) -> JSONResponse:
+    if not _db:
+        raise HTTPException(503, "Database not available")
+    from supermem.capture.insights import summarize_days
+
+    observations = await _db.get_recent_observations_by_age(days=days, limit=2000)
+    return JSONResponse(
+        {"days": days, "summaries": summarize_days(observations, days=days)}
+    )
 
 
 @app.post("/index/rebuild")

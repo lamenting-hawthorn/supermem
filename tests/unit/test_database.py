@@ -229,3 +229,41 @@ async def test_obs_ids_for_entities_dedup(db: DatabaseManager) -> None:
     # Searching for the same entity twice should not duplicate the obs_id
     ids = await db.obs_ids_for_entities(["Carol", "Carol"])
     assert ids.count(obs_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_recent_observations_by_age(db: DatabaseManager) -> None:
+    oid = await db.write_observation("TODO: follow up with Alice")
+    rows = await db.get_recent_observations_by_age(days=1, limit=10)
+    assert any(row["id"] == oid for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_write_observation_metadata_fields(db: DatabaseManager) -> None:
+    oid = await db.write_observation(
+        "Alice prefers tea",
+        source_id="chatgpt-export",
+        source_span="conversation-1#message-2",
+        observed_at=123.0,
+        valid_from=120.0,
+        confidence=0.7,
+        trust_level="user",
+        sensitivity="normal",
+    )
+    obs = await db.get_observations([oid])
+    assert obs[0]["source_id"] == "chatgpt-export"
+    assert obs[0]["source_span"] == "conversation-1#message-2"
+    assert obs[0]["observed_at"] == 123.0
+    assert obs[0]["valid_from"] == 120.0
+    assert obs[0]["confidence"] == 0.7
+    assert obs[0]["trust_level"] == "user"
+    assert obs[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_retract_observation_removes_from_retrieval(db: DatabaseManager) -> None:
+    oid = await db.write_observation("Secret launch codename is Bluebird")
+    assert oid in await db.fts_search("Bluebird")
+    assert await db.retract_observation(oid, reason="stale fact") is True
+    assert oid not in await db.fts_search("Bluebird")
+    assert await db.get_observations([oid]) == []

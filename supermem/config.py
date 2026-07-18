@@ -96,6 +96,11 @@ SUPERMEM_OBS_TTL_DAYS: int = int(os.getenv("SUPERMEM_OBS_TTL_DAYS", "90"))
 # ── Auth & rate limiting ──────────────────────────────────────────────────────
 
 SUPERMEM_API_KEY: str = os.getenv("SUPERMEM_API_KEY", "")
+SUPERMEM_AUTHORIZATION_SERVERS: list[str] = [
+    item.strip()
+    for item in os.getenv("SUPERMEM_AUTHORIZATION_SERVERS", "").split(",")
+    if item.strip()
+]
 SUPERMEM_RATE_LIMIT: int = int(os.getenv("SUPERMEM_RATE_LIMIT", "60"))
 
 # ── Worker ────────────────────────────────────────────────────────────────────

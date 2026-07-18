@@ -38,7 +38,17 @@ CREATE TABLE IF NOT EXISTS observations (
     tier_used       INTEGER,
     latency_ms      REAL,
     tool_name       TEXT,
-    type            TEXT    NOT NULL DEFAULT 'observation'
+    type            TEXT    NOT NULL DEFAULT 'observation',
+    source_id       TEXT,
+    source_span     TEXT,
+    observed_at     REAL,
+    valid_from      REAL,
+    valid_until     REAL,
+    confidence      REAL    NOT NULL DEFAULT 1.0,
+    trust_level     TEXT    NOT NULL DEFAULT 'unknown',
+    sensitivity     TEXT    NOT NULL DEFAULT 'normal',
+    status          TEXT    NOT NULL DEFAULT 'active',
+    expires_at      REAL
 );
 
 CREATE TABLE IF NOT EXISTS summaries (
@@ -97,12 +107,22 @@ class DatabaseManager(BaseStorage):
             conn.row_factory = aiosqlite.Row
             await conn.executescript(_SCHEMA)
             # Add expires_at column if this is an existing DB without it
-            try:
-                await conn.execute(
-                    "ALTER TABLE observations ADD COLUMN expires_at REAL"
-                )
-            except Exception:
-                pass  # column already exists — normal for new installs
+            for column, ddl in {
+                "expires_at": "ALTER TABLE observations ADD COLUMN expires_at REAL",
+                "source_id": "ALTER TABLE observations ADD COLUMN source_id TEXT",
+                "source_span": "ALTER TABLE observations ADD COLUMN source_span TEXT",
+                "observed_at": "ALTER TABLE observations ADD COLUMN observed_at REAL",
+                "valid_from": "ALTER TABLE observations ADD COLUMN valid_from REAL",
+                "valid_until": "ALTER TABLE observations ADD COLUMN valid_until REAL",
+                "confidence": "ALTER TABLE observations ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+                "trust_level": "ALTER TABLE observations ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unknown'",
+                "sensitivity": "ALTER TABLE observations ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'normal'",
+                "status": "ALTER TABLE observations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            }.items():
+                try:
+                    await conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists — normal for new installs
             await conn.commit()
             # Purge expired observations on startup (lazy cleanup)
             await self._purge_expired()
@@ -222,6 +242,15 @@ class DatabaseManager(BaseStorage):
         latency_ms: float | None = None,
         tool_name: str | None = None,
         obs_type: str = "observation",
+        source_id: str | None = None,
+        source_span: str | None = None,
+        observed_at: float | None = None,
+        valid_from: float | None = None,
+        valid_until: float | None = None,
+        confidence: float = 1.0,
+        trust_level: str = "unknown",
+        sensitivity: str = "normal",
+        status: str = "active",
     ) -> int:
         conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -241,8 +270,10 @@ class DatabaseManager(BaseStorage):
         try:
             async with conn.execute(
                 """INSERT INTO observations
-                   (session_id, content, content_hash, tier_used, latency_ms, tool_name, type, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (session_id, content, content_hash, tier_used, latency_ms, tool_name,
+                    type, source_id, source_span, observed_at, valid_from, valid_until,
+                    confidence, trust_level, sensitivity, status, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     content,
@@ -251,6 +282,15 @@ class DatabaseManager(BaseStorage):
                     latency_ms,
                     tool_name,
                     obs_type,
+                    source_id,
+                    source_span,
+                    observed_at,
+                    valid_from,
+                    valid_until,
+                    max(0.0, min(confidence, 1.0)),
+                    trust_level,
+                    sensitivity,
+                    status,
                     expires_at,
                 ),
             ) as cur:
@@ -269,8 +309,9 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         try:
             async with conn.execute(
-                """SELECT obs_id FROM content_fts
-                   WHERE content_fts MATCH ?
+                """SELECT f.obs_id FROM content_fts f
+                   JOIN observations o ON o.id = f.obs_id
+                   WHERE content_fts MATCH ? AND o.status = 'active'
                    ORDER BY rank
                    LIMIT ?""",
                 (query, limit),
@@ -290,7 +331,7 @@ class DatabaseManager(BaseStorage):
         placeholders = ",".join("?" * len(ids))
         try:
             async with conn.execute(
-                f"SELECT * FROM observations WHERE id IN ({placeholders}) ORDER BY created_at",
+                f"SELECT * FROM observations WHERE id IN ({placeholders}) AND status = 'active' ORDER BY created_at",
                 ids,
             ) as cur:
                 rows = await cur.fetchall()
@@ -442,6 +483,40 @@ class DatabaseManager(BaseStorage):
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    async def retract_observation(self, obs_id: int, reason: str | None = None) -> bool:
+        """Mark an observation retracted and remove it from retrieval indexes."""
+        conn = await self._ensure_init()
+        async with conn.execute(
+            "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
+        ) as cur:
+            updated = cur.rowcount > 0
+        if updated:
+            await conn.execute("DELETE FROM content_fts WHERE obs_id = ?", (obs_id,))
+            if reason:
+                await self.write_observation(
+                    content=f"Retracted observation {obs_id}: {reason}",
+                    obs_type="retraction",
+                    status="active",
+                    source_id=f"observation:{obs_id}",
+                )
+            await conn.commit()
+        return updated
+
+    async def get_recent_observations_by_age(
+        self, days: int = 7, limit: int = 500
+    ) -> list[dict]:
+        """Return recent observations newest first for local insight tools."""
+        conn = await self._ensure_init()
+        since = time.time() - max(days, 1) * 86400
+        async with conn.execute(
+            """SELECT * FROM observations
+               WHERE created_at >= ? AND status = 'active'
+               ORDER BY created_at DESC LIMIT ?""",
+            (since, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
