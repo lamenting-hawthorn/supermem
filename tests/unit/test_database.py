@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -331,3 +329,26 @@ async def test_rewrite_after_retraction_creates_active_row(db: DatabaseManager) 
 
     assert fresh != stale
     assert fresh in await db.fts_search("same")
+
+
+@pytest.mark.asyncio
+async def test_retract_observation_invalidates_session_summaries(
+    db: DatabaseManager,
+) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("Sensitive launch fact", session_id=sid)
+    await db.close_session(sid, "Summary leaks Sensitive launch fact")
+    await db.write_summary(sid, "Compressed leak Sensitive launch fact", [oid])
+
+    assert await db.retract_observation(oid, reason="forget sensitive fact") is True
+
+    async with db._conn.execute(
+        "SELECT summary FROM sessions WHERE id = ?", (sid,)
+    ) as cur:
+        session = await cur.fetchone()
+    assert session[0] is None
+    async with db._conn.execute(
+        "SELECT COUNT(*) FROM summaries WHERE session_id = ?", (sid,)
+    ) as cur:
+        summary_count = (await cur.fetchone())[0]
+    assert summary_count == 0

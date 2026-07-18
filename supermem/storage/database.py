@@ -531,13 +531,24 @@ class DatabaseManager(BaseStorage):
         try:
             await conn.execute("BEGIN")
             async with conn.execute(
-                "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
+                "SELECT session_id FROM observations WHERE id = ?", (obs_id,)
             ) as cur:
-                updated = cur.rowcount > 0
-            if not updated:
+                row = await cur.fetchone()
+            if not row:
                 await conn.rollback()
                 return False
+            session_id = row[0]
+            await conn.execute(
+                "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
+            )
             await conn.execute("DELETE FROM content_fts WHERE obs_id = ?", (obs_id,))
+            if session_id is not None:
+                await conn.execute(
+                    "UPDATE sessions SET summary = NULL WHERE id = ?", (session_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM summaries WHERE session_id = ?", (session_id,)
+                )
             if reason:
                 await conn.execute(
                     "INSERT INTO retraction_audit (obs_id, reason) VALUES (?, ?)",

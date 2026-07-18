@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import dataclasses
+import hashlib
 import json
 import os
 import socket
@@ -147,26 +148,27 @@ def _auth_ok(ctx: Context | None) -> bool:
     return auth_header == f"Bearer {SUPERMEM_API_KEY}"
 
 
-def _client_id(ctx: Context | None, tool_name: str) -> str:
-    """Best-effort client identity for rate limiting."""
+def _client_id(ctx: Context | None) -> str:
+    """Best-effort client identity for rate limiting, shared across all tools."""
     if ctx is None:
-        return f"{tool_name}:local"
+        return "local"
     try:
         request = ctx.get_http_request()
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
-            return f"{tool_name}:bearer:{auth_header[7:19]}"
+            digest = hashlib.sha256(auth_header[7:].encode()).hexdigest()[:16]
+            return f"bearer:{digest}"
         host = getattr(request.client, "host", "unknown")
-        return f"{tool_name}:http:{host}"
+        return f"http:{host}"
     except Exception:
-        return f"{tool_name}:stdio"
+        return "stdio"
 
 
 def _guard_tool(ctx: Context | None, tool_name: str) -> str | None:
     """Apply common MCP auth and rate limiting; return an error string on denial."""
     if not _auth_ok(ctx):
         return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
-    if not _check_rate(_client_id(ctx, tool_name)):
+    if not _check_rate(_client_id(ctx)):
         return (
             f"rate_limit_error: Too many requests. Limit is {SUPERMEM_RATE_LIMIT}/min."
         )
