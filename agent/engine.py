@@ -63,15 +63,15 @@ def _run_user_code(
     original_attrs: list[tuple[object, str, object]] = []
 
     def restore_state() -> None:
-        builtins.open = orig_open
-        builtins.__import__ = orig_import
-        os.remove = orig_remove
-        os.rename = orig_rename
         for obj, attr_name, value in reversed(original_attrs):
             try:
                 setattr(obj, attr_name, value)
             except Exception:
                 pass
+        builtins.open = orig_open
+        builtins.__import__ = orig_import
+        os.remove = orig_remove
+        os.rename = orig_rename
 
     try:
         # Optional: apply working directory and file access restriction
@@ -126,6 +126,64 @@ def _run_user_code(
                 return orig_rename(src, dst, *args, **kwargs)
 
             os.rename = secure_rename
+
+            def _contained_path(path) -> str:
+                full_path = os.path.abspath(os.fspath(path))
+                if not _is_within_path(full_path, allowed):
+                    raise PermissionError(
+                        f"Access to '{full_path}' is denied by restricted executor."
+                    )
+                return full_path
+
+            def _patch_os_path_function(name: str, wrapper_factory) -> None:
+                if hasattr(os, name):
+                    original = getattr(os, name)
+                    original_attrs.append((os, name, original))
+                    setattr(os, name, wrapper_factory(original))
+
+            def _single_path_wrapper(original):
+                def wrapped(path, *args, **kwargs):
+                    return original(_contained_path(path), *args, **kwargs)
+
+                return wrapped
+
+            def _os_open_wrapper(original):
+                def wrapped(path, flags, mode=0o777, *, dir_fd=None):
+                    if dir_fd is not None:
+                        raise PermissionError(
+                            "dir_fd based os.open is denied by restricted executor."
+                        )
+                    return original(_contained_path(path), flags, mode)
+
+                return wrapped
+
+            def _rename_like_wrapper(original):
+                def wrapped(src, dst, *args, **kwargs):
+                    return original(
+                        _contained_path(src), _contained_path(dst), *args, **kwargs
+                    )
+
+                return wrapped
+
+            def _walk_wrapper(original):
+                def wrapped(top, *args, **kwargs):
+                    return original(_contained_path(top), *args, **kwargs)
+
+                return wrapped
+
+            _patch_os_path_function("open", _os_open_wrapper)
+            for function_name in (
+                "listdir",
+                "scandir",
+                "mkdir",
+                "makedirs",
+                "rmdir",
+                "unlink",
+            ):
+                _patch_os_path_function(function_name, _single_path_wrapper)
+            for function_name in ("replace",):
+                _patch_os_path_function(function_name, _rename_like_wrapper)
+            _patch_os_path_function("walk", _walk_wrapper)
 
         install_runner = subprocess.run
 

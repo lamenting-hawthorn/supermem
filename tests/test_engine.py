@@ -6,7 +6,6 @@ and that path restrictions prevent access outside the allowed directory.
 """
 
 import os
-import pytest
 
 from agent.engine import execute_sandboxed_code
 
@@ -136,6 +135,26 @@ class TestRestrictedExecutorHardening:
         locals_dict, error = execute_sandboxed_code("import socket")
         assert locals_dict is not None
         assert "Import of 'socket' is denied" in error
+
+    def test_import_hook_globals_cannot_os_open_outside_allowed_path(self, tmp_path):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        code = (
+            "try:\n"
+            "    leaked_os = __builtins__['__import__'].__globals__['os']\n"
+            f"    fd = leaked_os.open('{outside}', leaked_os.O_RDONLY)\n"
+            "    leaked_os.close(fd)\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+
+        assert not error
+        assert locals_dict.get("escaped") is False
 
     def test_commonpath_blocks_prefix_escape(self, tmp_path):
         allowed = tmp_path / "vault"
