@@ -11,6 +11,17 @@
 
 An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — **persistent, structured memory** backed by SQLite + an optional graph database. The LLM agent is tier 4, not the default path — most queries resolve in milliseconds via full-text search.
 
+## Highlights
+
+| Capability | What it gives you |
+|------------|-------------------|
+| **Four-tier retrieval** | Fast FTS5 first, graph expansion second, optional vector search third, and LLM fallback only when needed. |
+| **Local-first vault** | Markdown files remain portable and inspectable; SQLite/Kuzu/Chroma indexes can be rebuilt. |
+| **Memory lifecycle** | Observations carry provenance, confidence, sensitivity, validity, TTL, and `active`/`retracted` status metadata. |
+| **Retraction workflow** | Stale or sensitive observations can be retracted from FTS, vector-backed retrieval, timelines, and derived summaries. |
+| **Local productivity insights** | Heuristic open-task extraction, follow-up suggestions, and day summaries without an LLM call. |
+| **Safer operations** | Path-safe backup restore, shared MCP auth/rate guards, PR-safe CI release validation, and a documented security posture. |
+
 ---
 
 ## Quick Start (Personal, No GPU)
@@ -77,10 +88,24 @@ Query
   │          sentence-transformer embeddings
   │
   └─ Tier 4: LLM agent fallback                   ~5-30s  always available
-             navigates vault via Python sandbox
+             navigates vault via a restricted local executor
 ```
 
-**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–4 are skipped entirely. Unavailable tiers are skipped with a WARNING log — no errors raised.
+**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–4 are skipped entirely. Unavailable tiers are skipped with a WARNING log — no errors raised. Candidate IDs are filtered through observation lifecycle status before being returned, so retracted memories are excluded from search, timeline context, and derived summaries.
+
+---
+
+## Memory Lifecycle and Retraction
+
+Each observation is stored with lifecycle/provenance metadata designed for source-grounded memory:
+
+| Field group | Examples | Purpose |
+|-------------|----------|---------|
+| Source | `source_id`, `source_span`, `observed_at` | Trace a memory back to an import, file, conversation, or time span. |
+| Validity | `valid_from`, `valid_until`, `confidence`, `trust_level` | Represent changing facts and retrieval confidence. |
+| Governance | `sensitivity`, `status`, `expires_at` | Support privacy labels, TTL cleanup, and active/retracted filtering. |
+
+Use `retract_observation` or `POST /observations/{id}/retract` to mark stale or sensitive records as retracted. Retraction removes the observation from FTS, filters it from hybrid retrieval, deletes vector chunks when available through the MCP/worker path, removes it from timelines and recent-session context, and invalidates derived session summaries. Retraction reasons are stored in a non-FTS audit table so the value being forgotten is not re-indexed as an active memory.
 
 ---
 
@@ -108,8 +133,24 @@ result = await supermem_hybrid("Alice's project status", tier_limit=2)
 obs = await get_observations([42, 17])
 # [{"id": 42, "content": "...", "tier_used": 1}, ...]
 
-# 3. Timeline — context around interesting observations  
+# 3. Timeline — context around interesting observations
 ctx = await get_timeline(42, window=3)
+
+# 4. Retract — remove stale/sensitive memory from retrieval
+await retract_observation(obs_id=42, reason="superseded by current roadmap")
+```
+
+### Local Insight Pattern
+
+```python
+# Open-loop inbox for recent memory
+tasks = await list_open_tasks(days=14, limit=20)
+
+# Turn open tasks into concise next-action prompts
+followups = await suggest_followups(days=14, limit=10)
+
+# Summarize recent days without an LLM call
+summaries = await list_day_summaries(days=7)
 ```
 
 ---
@@ -124,9 +165,10 @@ ctx = await get_timeline(42, window=3)
 | `SUPERMEM_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
 | `SUPERMEM_VECTOR` | `false` | Set `true` to enable ChromaDB tier |
 | `SUPERMEM_API_KEY` | _(none)_ | Bearer token for HTTP API auth (disabled if unset) |
-| `SUPERMEM_RATE_LIMIT` | `60` | Requests/minute limit |
+| `SUPERMEM_RATE_LIMIT` | `60` | Requests/minute limit per client identity across MCP tools |
 | `SUPERMEM_WORKER_PORT` | `37777` | HTTP dashboard port |
 | `SUPERMEM_COMPRESS_EVERY` | `50` | Observations written before LLM compression |
+| `SUPERMEM_OBS_TTL_DAYS` | `90` | Retention window for regular observations (`0` disables TTL expiry) |
 | `OPENROUTER_API_KEY` | _(required for openrouter)_ | OpenRouter API key |
 | `ANTHROPIC_API_KEY` | _(required for claude)_ | Anthropic API key |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
@@ -200,9 +242,9 @@ Auth: `Authorization: Bearer <SUPERMEM_API_KEY>`. Disabled when env var is unset
 
 ---
 
-## Privacy
+## Privacy and Security
 
-Wrap sensitive content in `<private>...</private>` tags. It is stripped before writing to any storage layer (SQLite, Kuzu, ChromaDB). The content passes through to the agent sandbox only — it never persists.
+Wrap sensitive content in `<private>...</private>` tags. It is stripped before writing to any storage layer (SQLite, Kuzu, ChromaDB). The content passes through to the restricted local executor only — it never persists.
 
 ```markdown
 # Meeting Notes
@@ -211,6 +253,19 @@ Alice discussed the roadmap.
 <private>Budget: $2.4M approved for Q3</private>
 Next steps: ship v2 by June.
 ```
+
+Additional safeguards:
+
+- Backup restore rejects archive members that would escape the configured vault.
+- MCP tools share one auth/rate-limit guard and one per-client rate bucket.
+- The Python executor blocks denied imports, scrubs inherited environment variables, and wraps common filesystem APIs; it is still a restricted local executor, **not** a substitute for container/OS isolation for hostile code.
+- Remote HTTP deployments should set `SUPERMEM_API_KEY`, avoid exposing the worker directly to the public internet, and review [`SECURITY.md`](SECURITY.md).
+
+---
+
+## CI and Release Checks
+
+Pull requests run lint, formatting, type-checking, tests with coverage, Docker build validation, and package build validation. Docker pushes and PyPI publishing remain gated to version-tag pushes (`v*`) so PRs validate release artifacts without publishing them.
 
 ---
 
