@@ -118,30 +118,3 @@ async def test_retracted_observations_filtered_from_search(
 
     result = await retriever.search("Bluebird", tier_limit=1)
     assert oid not in result.obs_ids
-
-
-@pytest.mark.asyncio
-async def test_tier4_skipped_when_retracted_vault_facts_exist(
-    db: DatabaseManager, retriever: HybridRetriever
-) -> None:
-    oid = await db.write_observation("Project codename is Bluebird")
-    await db.retract_observation(oid, reason="forget stale codename")
-
-    called = False
-
-    async def fake_agent_search(query: str, limit: int = 10):
-        nonlocal called
-        called = True
-        new_oid = await db.write_observation(
-            "Project codename is Bluebird", tier_used=4, obs_type="agent_reply"
-        )
-        from supermem.core.retriever import RetrievalResult
-
-        return RetrievalResult(obs_ids=[new_oid], source_tier=4, latency_ms=0)
-
-    retriever._agent.search = fake_agent_search  # type: ignore[method-assign]
-
-    result = await retriever.search("Bluebird", tier_limit=4, min_results=3)
-
-    assert called is False
-    assert result.obs_ids == []

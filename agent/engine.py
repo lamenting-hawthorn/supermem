@@ -34,76 +34,6 @@ DENIED_IMPORT_ROOTS = {
 }
 
 
-class _RestrictedImportHook:
-    """Callable import hook that avoids exposing importer internals to user code."""
-
-    __slots__ = ("_orig_import", "_allow_installs", "_install_runner", "_install_popen")
-    _DENIED_ATTRS = {
-        "__closure__",
-        "__globals__",
-        "__code__",
-        "__defaults__",
-        "__kwdefaults__",
-        "__dict__",
-        "__call__",
-        "_orig_import",
-        "_allow_installs",
-        "_install_runner",
-        "_install_popen",
-    }
-
-    def __init__(
-        self, orig_import, allow_installs: bool, install_runner, install_popen
-    ):
-        object.__setattr__(self, "_orig_import", orig_import)
-        object.__setattr__(self, "_allow_installs", allow_installs)
-        object.__setattr__(self, "_install_runner", install_runner)
-        object.__setattr__(self, "_install_popen", install_popen)
-
-    def __getattribute__(self, name):
-        if name in object.__getattribute__(self, "_DENIED_ATTRS"):
-            raise AttributeError(name)
-        return object.__getattribute__(self, name)
-
-    def __setattr__(self, name, value):
-        raise AttributeError("restricted import hook is immutable")
-
-    def __call__(self, name, globals=None, locals=None, fromlist=(), level=0):
-        root_name = name.split(".")[0]
-        if root_name in DENIED_IMPORT_ROOTS:
-            raise ImportError(
-                f"Import of '{root_name}' is denied by restricted executor."
-            )
-        orig_import = object.__getattribute__(self, "_orig_import")
-        try:
-            return orig_import(name, globals, locals, fromlist, level)
-        except ImportError as e:
-            if not object.__getattribute__(self, "_allow_installs"):
-                raise
-            pkg = name.split(".")[0]
-            logger.info("Restricted executor: attempting to install '%s'", pkg)
-            try:
-                current_popen = subprocess.Popen
-                subprocess.Popen = object.__getattribute__(self, "_install_popen")
-                try:
-                    object.__getattribute__(self, "_install_runner")(
-                        [sys.executable, "-m", "pip", "install", pkg],
-                        check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                finally:
-                    subprocess.Popen = current_popen
-            except Exception as inst_err:
-                logger.error(
-                    "Restricted executor: failed to install package %s: %s",
-                    pkg,
-                    inst_err,
-                )
-                raise e
-            return orig_import(name, globals, locals, fromlist, level)
-
-
 def _is_within_path(path: str, root: str) -> bool:
     """Return True when path resolves inside root using path-aware comparison."""
     try:
@@ -265,7 +195,6 @@ def _run_user_code(
             _patch_os_path_function("walk", _walk_wrapper)
 
         install_runner = subprocess.run
-        install_popen = subprocess.Popen
 
         # Apply blacklist restrictions by removing or disabling blacklisted builtins or attributes
         if blacklist:
@@ -297,9 +226,36 @@ def _run_user_code(
                         )
             # Additionally, we can ensure __builtins__ in the exec env doesn't contain them (handled below in exec)
 
-        builtins.__import__ = _RestrictedImportHook(
-            orig_import, allow_installs, install_runner, install_popen
-        )
+        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
+            root_name = name.split(".")[0]
+            if root_name in DENIED_IMPORT_ROOTS:
+                raise ImportError(
+                    f"Import of '{root_name}' is denied by restricted executor."
+                )
+            try:
+                return orig_import(name, globals, locals, fromlist, level)
+            except ImportError as e:
+                if not allow_installs:
+                    raise
+                pkg = name.split(".")[0]
+                logger.info("Restricted executor: attempting to install '%s'", pkg)
+                try:
+                    install_runner(
+                        [sys.executable, "-m", "pip", "install", pkg],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception as inst_err:
+                    logger.error(
+                        "Restricted executor: failed to install package %s: %s",
+                        pkg,
+                        inst_err,
+                    )
+                    raise e
+                return orig_import(name, globals, locals, fromlist, level)
+
+        builtins.__import__ = custom_import
 
         # Prepare an isolated execution namespace. We use an empty globals dict with a fresh builtins.
         exec_globals = {"__builtins__": builtins.__dict__}

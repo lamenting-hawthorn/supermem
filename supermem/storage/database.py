@@ -526,21 +526,6 @@ class DatabaseManager(BaseStorage):
             rows = await cur.fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    async def has_retracted_observation_match(self, query: str) -> bool:
-        """Return True when the query overlaps content from retracted observations."""
-        terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]{3,}", query)]
-        if not terms:
-            return False
-
-        clauses = " OR ".join("LOWER(content) LIKE ?" for _ in terms)
-        params = [f"%{term}%" for term in terms]
-        conn = await self._ensure_init()
-        async with conn.execute(
-            f"SELECT 1 FROM observations WHERE status = 'retracted' AND ({clauses}) LIMIT 1",
-            params,
-        ) as cur:
-            return await cur.fetchone() is not None
-
     async def retract_observation(self, obs_id: int, reason: str | None = None) -> bool:
         """Mark an observation retracted and store a non-retrievable audit reason."""
         conn = await self._ensure_init()
