@@ -105,3 +105,16 @@ async def test_dedup_across_tiers(
     result = await retriever.search("dedup test alice", tier_limit=2)
     # IDs should be deduplicated — no duplicates in result
     assert len(result.obs_ids) == len(set(result.obs_ids))
+
+
+@pytest.mark.asyncio
+async def test_retracted_observations_filtered_from_search(
+    db: DatabaseManager, retriever: HybridRetriever
+) -> None:
+    oid = await db.write_observation("Project codename is Bluebird")
+    assert oid in (await retriever.search("Bluebird", tier_limit=1)).obs_ids
+
+    await db.retract_observation(oid, reason="superseded")
+
+    result = await retriever.search("Bluebird", tier_limit=1)
+    assert oid not in result.obs_ids
