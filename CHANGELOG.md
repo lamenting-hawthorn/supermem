@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Observation provenance/lifecycle metadata, retraction audit storage, and active/retracted filtering across retrieval, timelines, and recent-session context.
+- Local insight tools for open-task extraction, follow-up suggestions, and day summaries, exposed through MCP and the worker HTTP API.
+- Worker endpoints for protected-resource metadata, local insights, and observation retraction.
+- Security posture documentation covering current safeguards, limitations, and production hardening roadmap.
+
+### Changed
+- Hybrid retrieval now filters candidate IDs through lifecycle status before returning results.
+- MCP rate limiting is keyed by client identity across tools rather than per tool.
+- CI release jobs validate Docker/package builds on pull requests while pushing/publishing only on version tags.
+- The agent executor is documented and hardened as a restricted local executor rather than a hostile-code sandbox.
+
+### Fixed
+- Archive restore rejects absolute and traversal paths before writing into the vault.
+- Retraction invalidates derived session summaries and stores reasons outside FTS to avoid re-indexing sensitive values.
+- Restricted executor wrappers cover common lower-level filesystem APIs reachable through import-hook globals.
+
 ## [0.3.1] - 2026-06-10
 
 ### Fixed

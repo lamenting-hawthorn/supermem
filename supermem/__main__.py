@@ -103,6 +103,17 @@ def cmd_backup(args: argparse.Namespace) -> None:
     print(f"Backup complete: {output} ({output.stat().st_size // 1024} KB)", flush=True)
 
 
+def _safe_restore_destination(root: Path, relative_name: str) -> Path:
+    """Resolve a restore target and ensure it remains inside root."""
+    if not relative_name or relative_name.startswith(("/", "\\")):
+        raise ValueError(f"Unsafe archive member path: {relative_name!r}")
+    root_resolved = root.resolve()
+    dest = (root_resolved / relative_name).resolve()
+    if not dest.is_relative_to(root_resolved):
+        raise ValueError(f"Unsafe archive member path: {relative_name!r}")
+    return dest
+
+
 def cmd_restore(args: argparse.Namespace) -> None:
     """Restore vault + SQLite from a backup archive."""
     from supermem.config import SUPERMEM_DB_PATH, SUPERMEM_VAULT_PATH
@@ -117,7 +128,13 @@ def cmd_restore(args: argparse.Namespace) -> None:
         for member in tar.getmembers():
             if member.name.startswith("vault/"):
                 rel = member.name[len("vault/") :]
-                dest = SUPERMEM_VAULT_PATH / rel
+                if member.isdir():
+                    continue
+                try:
+                    dest = _safe_restore_destination(SUPERMEM_VAULT_PATH, rel)
+                except ValueError as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    sys.exit(1)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 f = tar.extractfile(member)
                 if f:
