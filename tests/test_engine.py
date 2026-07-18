@@ -6,7 +6,6 @@ and that path restrictions prevent access outside the allowed directory.
 """
 
 import os
-import pytest
 
 from agent.engine import execute_sandboxed_code
 
@@ -121,3 +120,100 @@ class TestAvailableFunctions:
         )
         assert not error
         assert locals_dict["result"] is False
+
+
+class TestRestrictedExecutorHardening:
+    def test_environment_is_scrubbed(self):
+        os.environ["SUPERMEM_TEST_SECRET"] = "do-not-leak"
+        locals_dict, error = execute_sandboxed_code(
+            "import os\nsecret = os.environ.get('SUPERMEM_TEST_SECRET')"
+        )
+        assert locals_dict is not None
+        assert "Import of 'os' is denied" in error
+
+    def test_denies_network_imports(self):
+        locals_dict, error = execute_sandboxed_code("import socket")
+        assert locals_dict is not None
+        assert "Import of 'socket' is denied" in error
+
+    def test_import_hook_globals_cannot_os_open_outside_allowed_path(self, tmp_path):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        code = (
+            "try:\n"
+            "    leaked_os = __builtins__['__import__'].__globals__['os']\n"
+            f"    fd = leaked_os.open('{outside}', leaked_os.O_RDONLY)\n"
+            "    leaked_os.close(fd)\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+
+        assert not error
+        assert locals_dict.get("escaped") is False
+
+    def test_import_hook_globals_cannot_symlink_outside_allowed_path(self, tmp_path):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        outside = tmp_path / "outside-link"
+        code = (
+            "try:\n"
+            "    leaked_os = __builtins__['__import__'].__globals__['os']\n"
+            f"    leaked_os.symlink('/etc/passwd', '{outside}')\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+
+        assert not error
+        assert locals_dict.get("escaped") is False
+        assert not outside.exists()
+
+    def test_commonpath_blocks_prefix_escape(self, tmp_path):
+        allowed = tmp_path / "vault"
+        sibling = tmp_path / "vault-evil"
+        allowed.mkdir()
+        sibling.mkdir()
+        outside = sibling / "secret.txt"
+        code = (
+            "try:\n"
+            f"    open('{outside}', 'w').write('escaped')\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+        assert locals_dict.get("escaped") is False
+        assert not outside.exists()
+
+
+def test_allow_installs_keeps_install_runner_when_subprocess_blacklisted(monkeypatch):
+    import sys
+    import types
+    import agent.engine as engine
+
+    module_name = "supermem_fake_install_target"
+    sys.modules.pop(module_name, None)
+
+    def fake_run(*args, **kwargs):
+        sys.modules[module_name] = types.ModuleType(module_name)
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(engine.subprocess, "run", fake_run)
+    locals_dict, error = engine._run_user_code(
+        f"import {module_name}\ninstalled = True",
+        allow_installs=True,
+        allowed_path="",
+        blacklist=["subprocess.run"],
+        available_functions={},
+    )
+
+    assert error is None
+    assert locals_dict["installed"] is True
+    sys.modules.pop(module_name, None)

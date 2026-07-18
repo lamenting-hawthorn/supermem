@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -229,3 +227,128 @@ async def test_obs_ids_for_entities_dedup(db: DatabaseManager) -> None:
     # Searching for the same entity twice should not duplicate the obs_id
     ids = await db.obs_ids_for_entities(["Carol", "Carol"])
     assert ids.count(obs_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_recent_observations_by_age(db: DatabaseManager) -> None:
+    oid = await db.write_observation("TODO: follow up with Alice")
+    rows = await db.get_recent_observations_by_age(days=1, limit=10)
+    assert any(row["id"] == oid for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_write_observation_metadata_fields(db: DatabaseManager) -> None:
+    oid = await db.write_observation(
+        "Alice prefers tea",
+        source_id="chatgpt-export",
+        source_span="conversation-1#message-2",
+        observed_at=123.0,
+        valid_from=120.0,
+        confidence=0.7,
+        trust_level="user",
+        sensitivity="normal",
+    )
+    obs = await db.get_observations([oid])
+    assert obs[0]["source_id"] == "chatgpt-export"
+    assert obs[0]["source_span"] == "conversation-1#message-2"
+    assert obs[0]["observed_at"] == 123.0
+    assert obs[0]["valid_from"] == 120.0
+    assert obs[0]["confidence"] == 0.7
+    assert obs[0]["trust_level"] == "user"
+    assert obs[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_retract_observation_removes_from_retrieval(db: DatabaseManager) -> None:
+    oid = await db.write_observation("Secret launch codename is Bluebird")
+    assert oid in await db.fts_search("Bluebird")
+    assert await db.retract_observation(oid, reason="stale fact") is True
+    assert oid not in await db.fts_search("Bluebird")
+    assert await db.get_observations([oid]) == []
+
+
+@pytest.mark.asyncio
+async def test_active_obs_ids_preserves_order_and_filters_retracted(
+    db: DatabaseManager,
+) -> None:
+    first = await db.write_observation("first active memory")
+    second = await db.write_observation("second stale memory")
+    third = await db.write_observation("third active memory")
+    await db.retract_observation(second)
+
+    assert await db.active_obs_ids([third, second, first]) == [third, first]
+
+
+@pytest.mark.asyncio
+async def test_timeline_filters_retracted_neighbors(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    before = await db.write_observation("before active", session_id=sid)
+    stale = await db.write_observation("middle stale", session_id=sid)
+    after = await db.write_observation("after active", session_id=sid)
+    await db.retract_observation(stale, reason="contains sensitive token")
+
+    timeline = await db.get_timeline(before, window=5)
+    ids = [row["id"] for row in timeline]
+    assert stale not in ids
+    assert after in ids
+
+
+@pytest.mark.asyncio
+async def test_recent_observations_filters_retracted_rows(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    active = await db.write_observation("active recent", session_id=sid)
+    stale = await db.write_observation("stale recent", session_id=sid)
+    await db.retract_observation(stale)
+
+    rows = await db.get_recent_observations(sid, limit=10)
+    ids = [row["id"] for row in rows]
+    assert active in ids
+    assert stale not in ids
+
+
+@pytest.mark.asyncio
+async def test_retract_reason_is_not_indexed(db: DatabaseManager) -> None:
+    oid = await db.write_observation("temporary sensitive record")
+    await db.retract_observation(oid, reason="SSN 123-45-6789")
+
+    assert await db.fts_search("123") == []
+    async with db._conn.execute(
+        "SELECT reason FROM retraction_audit WHERE obs_id = ?", (oid,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row[0] == "SSN 123-45-6789"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_after_retraction_creates_active_row(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    stale = await db.write_observation("same fact", session_id=sid)
+    await db.retract_observation(stale)
+
+    fresh = await db.write_observation("same fact", session_id=sid)
+
+    assert fresh != stale
+    assert fresh in await db.fts_search("same")
+
+
+@pytest.mark.asyncio
+async def test_retract_observation_invalidates_session_summaries(
+    db: DatabaseManager,
+) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("Sensitive launch fact", session_id=sid)
+    await db.close_session(sid, "Summary leaks Sensitive launch fact")
+    await db.write_summary(sid, "Compressed leak Sensitive launch fact", [oid])
+
+    assert await db.retract_observation(oid, reason="forget sensitive fact") is True
+
+    async with db._conn.execute(
+        "SELECT summary FROM sessions WHERE id = ?", (sid,)
+    ) as cur:
+        session = await cur.fetchone()
+    assert session[0] is None
+    async with db._conn.execute(
+        "SELECT COUNT(*) FROM summaries WHERE session_id = ?", (sid,)
+    ) as cur:
+        summary_count = (await cur.fetchone())[0]
+    assert summary_count == 0
