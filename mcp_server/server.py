@@ -473,6 +473,13 @@ async def retract_observation(
         return json.dumps({"error": "Database not initialised", "retracted": False})
     try:
         retracted = await _ctx.db.retract_observation(obs_id, reason=reason or None)
+        if retracted and _ctx.chroma is not None:
+            try:
+                await _ctx.chroma.delete_obs(obs_id)
+            except Exception as exc:
+                log.warning(
+                    "retract_vector_delete_failed", obs_id=obs_id, error=str(exc)
+                )
         return json.dumps({"obs_id": obs_id, "retracted": retracted}, indent=2)
     except Exception as exc:
         log.warning("retract_observation_error", obs_id=obs_id, error=str(exc))

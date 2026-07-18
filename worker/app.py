@@ -322,6 +322,11 @@ async def retract_observation_endpoint(
     )
     if not retracted:
         raise HTTPException(404, "Observation not found")
+    if _chroma is not None:
+        try:
+            await _chroma.delete_obs(obs_id)
+        except Exception as exc:
+            log.warning("retract_vector_delete_failed", obs_id=obs_id, error=str(exc))
     return JSONResponse({"obs_id": obs_id, "retracted": True})
 
 

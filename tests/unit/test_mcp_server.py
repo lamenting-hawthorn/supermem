@@ -205,11 +205,14 @@ class TestRetractObservationTool:
     async def test_retract_success(self, monkeypatch):
         mock_db = AsyncMock()
         mock_db.retract_observation.return_value = True
+        mock_chroma = AsyncMock()
         monkeypatch.setattr(srv._ctx, "db", mock_db)
+        monkeypatch.setattr(srv._ctx, "chroma", mock_chroma)
         result = await srv.retract_observation.fn(obs_id=42, reason="stale")
         data = json.loads(result)
         assert data["retracted"] is True
         mock_db.retract_observation.assert_awaited_once_with(42, reason="stale")
+        mock_chroma.delete_obs.assert_awaited_once_with(42)
 
     @pytest.mark.asyncio
     async def test_retract_no_db(self, monkeypatch):

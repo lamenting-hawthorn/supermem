@@ -323,6 +323,20 @@ class DatabaseManager(BaseStorage):
             log.warning("fts_search_failed", error=str(exc), query=query)
             return []
 
+    async def active_obs_ids(self, ids: list[int]) -> list[int]:
+        """Return the subset of ids whose observations are still active."""
+        if not ids:
+            return []
+        conn = await self._ensure_init()
+        placeholders = ",".join("?" * len(ids))
+        async with conn.execute(
+            f"SELECT id FROM observations WHERE id IN ({placeholders}) AND status = 'active'",
+            ids,
+        ) as cur:
+            rows = await cur.fetchall()
+        active = {row[0] for row in rows}
+        return [obs_id for obs_id in ids if obs_id in active]
+
     async def get_observations(self, ids: list[int]) -> list[dict]:
         """Batch fetch full observation records by IDs."""
         if not ids:

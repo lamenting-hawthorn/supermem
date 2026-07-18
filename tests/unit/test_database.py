@@ -267,3 +267,15 @@ async def test_retract_observation_removes_from_retrieval(db: DatabaseManager) -
     assert await db.retract_observation(oid, reason="stale fact") is True
     assert oid not in await db.fts_search("Bluebird")
     assert await db.get_observations([oid]) == []
+
+
+@pytest.mark.asyncio
+async def test_active_obs_ids_preserves_order_and_filters_retracted(
+    db: DatabaseManager,
+) -> None:
+    first = await db.write_observation("first active memory")
+    second = await db.write_observation("second stale memory")
+    third = await db.write_observation("third active memory")
+    await db.retract_observation(second)
+
+    assert await db.active_obs_ids([third, second, first]) == [third, first]
