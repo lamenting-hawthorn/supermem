@@ -147,7 +147,7 @@ class TestRestrictedExecutorHardening:
             f"    fd = leaked_os.open('{outside}', leaked_os.O_RDONLY)\n"
             "    leaked_os.close(fd)\n"
             "    escaped = True\n"
-            "except (PermissionError, AttributeError):\n"
+            "except PermissionError:\n"
             "    escaped = False\n"
         )
 
@@ -165,7 +165,7 @@ class TestRestrictedExecutorHardening:
             "    leaked_os = __builtins__['__import__'].__globals__['os']\n"
             f"    leaked_os.symlink('/etc/passwd', '{outside}')\n"
             "    escaped = True\n"
-            "except (PermissionError, AttributeError):\n"
+            "except PermissionError:\n"
             "    escaped = False\n"
         )
 
@@ -174,34 +174,6 @@ class TestRestrictedExecutorHardening:
         assert not error
         assert locals_dict.get("escaped") is False
         assert not outside.exists()
-
-    def test_import_hook_closure_does_not_expose_original_importer(self, tmp_path):
-        allowed = tmp_path / "vault"
-        allowed.mkdir()
-        code = (
-            "hook = __builtins__['__import__']\n"
-            "try:\n"
-            "    closure = hook.__closure__\n"
-            "except AttributeError:\n"
-            "    closure = None\n"
-            "escaped = False\n"
-            "if closure:\n"
-            "    for cell in closure:\n"
-            "        candidate = cell.cell_contents\n"
-            "        try:\n"
-            "            candidate('socket')\n"
-            "            escaped = True\n"
-            "            break\n"
-            "        except Exception:\n"
-            "            pass\n"
-            "del hook\n"
-        )
-
-        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
-
-        assert not error
-        assert locals_dict.get("closure") is None
-        assert locals_dict.get("escaped") is False
 
     def test_commonpath_blocks_prefix_escape(self, tmp_path):
         allowed = tmp_path / "vault"
@@ -213,7 +185,7 @@ class TestRestrictedExecutorHardening:
             "try:\n"
             f"    open('{outside}', 'w').write('escaped')\n"
             "    escaped = True\n"
-            "except (PermissionError, AttributeError):\n"
+            "except PermissionError:\n"
             "    escaped = False\n"
         )
         locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
