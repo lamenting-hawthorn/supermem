@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,17 @@ CREATE TABLE IF NOT EXISTS observations (
     tier_used       INTEGER,
     latency_ms      REAL,
     tool_name       TEXT,
-    type            TEXT    NOT NULL DEFAULT 'observation'
+    type            TEXT    NOT NULL DEFAULT 'observation',
+    source_id       TEXT,
+    source_span     TEXT,
+    observed_at     REAL,
+    valid_from      REAL,
+    valid_until     REAL,
+    confidence      REAL    NOT NULL DEFAULT 1.0,
+    trust_level     TEXT    NOT NULL DEFAULT 'unknown',
+    sensitivity     TEXT    NOT NULL DEFAULT 'normal',
+    status          TEXT    NOT NULL DEFAULT 'active',
+    expires_at      REAL
 );
 
 CREATE TABLE IF NOT EXISTS summaries (
@@ -47,6 +58,14 @@ CREATE TABLE IF NOT EXISTS summaries (
     created_at          REAL    NOT NULL DEFAULT (unixepoch('now', 'subsec')),
     content             TEXT    NOT NULL,
     obs_ids_compressed  TEXT    NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS retraction_audit (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    obs_id          INTEGER NOT NULL,
+    created_at      REAL    NOT NULL DEFAULT (unixepoch('now', 'subsec')),
+    reason          TEXT,
+    FOREIGN KEY(obs_id) REFERENCES observations(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS entity_metadata (
@@ -96,13 +115,23 @@ class DatabaseManager(BaseStorage):
             self._conn = conn
             conn.row_factory = aiosqlite.Row
             await conn.executescript(_SCHEMA)
-            # Add expires_at column if this is an existing DB without it
-            try:
-                await conn.execute(
-                    "ALTER TABLE observations ADD COLUMN expires_at REAL"
-                )
-            except Exception:
-                pass  # column already exists — normal for new installs
+            migration_ddls = {
+                "expires_at": "ALTER TABLE observations ADD COLUMN expires_at REAL",
+                "source_id": "ALTER TABLE observations ADD COLUMN source_id TEXT",
+                "source_span": "ALTER TABLE observations ADD COLUMN source_span TEXT",
+                "observed_at": "ALTER TABLE observations ADD COLUMN observed_at REAL",
+                "valid_from": "ALTER TABLE observations ADD COLUMN valid_from REAL",
+                "valid_until": "ALTER TABLE observations ADD COLUMN valid_until REAL",
+                "confidence": "ALTER TABLE observations ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+                "trust_level": "ALTER TABLE observations ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unknown'",
+                "sensitivity": "ALTER TABLE observations ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'normal'",
+                "status": "ALTER TABLE observations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            }
+            async with conn.execute("PRAGMA table_info(observations)") as cur:
+                existing_columns = {row[1] for row in await cur.fetchall()}
+            for column, ddl in migration_ddls.items():
+                if column not in existing_columns:
+                    await conn.execute(ddl)
             await conn.commit()
             # Purge expired observations on startup (lazy cleanup)
             await self._purge_expired()
@@ -222,13 +251,40 @@ class DatabaseManager(BaseStorage):
         latency_ms: float | None = None,
         tool_name: str | None = None,
         obs_type: str = "observation",
+        source_id: str | None = None,
+        source_span: str | None = None,
+        observed_at: float | None = None,
+        valid_from: float | None = None,
+        valid_until: float | None = None,
+        confidence: float = 1.0,
+        trust_level: str = "unknown",
+        sensitivity: str = "normal",
+        status: str = "active",
     ) -> int:
         conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        # Dedup: skip if identical content already recorded in this session
+        confidence = max(0.0, min(confidence, 1.0))
+        # Dedup only when content and lifecycle/provenance metadata match an active row.
         async with conn.execute(
-            "SELECT id FROM observations WHERE content_hash = ? AND session_id IS ?",
-            (content_hash, session_id),
+            """SELECT id FROM observations
+               WHERE content_hash = ? AND session_id IS ? AND type = ?
+                 AND source_id IS ? AND source_span IS ? AND observed_at IS ?
+                 AND valid_from IS ? AND valid_until IS ? AND confidence = ?
+                 AND trust_level = ? AND sensitivity = ? AND status = ?""",
+            (
+                content_hash,
+                session_id,
+                obs_type,
+                source_id,
+                source_span,
+                observed_at,
+                valid_from,
+                valid_until,
+                confidence,
+                trust_level,
+                sensitivity,
+                status,
+            ),
         ) as cur:
             existing = await cur.fetchone()
         if existing:
@@ -241,8 +297,10 @@ class DatabaseManager(BaseStorage):
         try:
             async with conn.execute(
                 """INSERT INTO observations
-                   (session_id, content, content_hash, tier_used, latency_ms, tool_name, type, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (session_id, content, content_hash, tier_used, latency_ms, tool_name,
+                    type, source_id, source_span, observed_at, valid_from, valid_until,
+                    confidence, trust_level, sensitivity, status, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     content,
@@ -251,14 +309,24 @@ class DatabaseManager(BaseStorage):
                     latency_ms,
                     tool_name,
                     obs_type,
+                    source_id,
+                    source_span,
+                    observed_at,
+                    valid_from,
+                    valid_until,
+                    confidence,
+                    trust_level,
+                    sensitivity,
+                    status,
                     expires_at,
                 ),
             ) as cur:
                 obs_id = cur.lastrowid
-            await conn.execute(
-                "INSERT INTO content_fts (obs_id, content) VALUES (?, ?)",
-                (obs_id, content),
-            )
+            if status == "active":
+                await conn.execute(
+                    "INSERT INTO content_fts (obs_id, content) VALUES (?, ?)",
+                    (obs_id, content),
+                )
             await conn.commit()
             return obs_id
         except Exception as exc:
@@ -269,8 +337,9 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         try:
             async with conn.execute(
-                """SELECT obs_id FROM content_fts
-                   WHERE content_fts MATCH ?
+                """SELECT f.obs_id FROM content_fts f
+                   JOIN observations o ON o.id = f.obs_id
+                   WHERE content_fts MATCH ? AND o.status = 'active'
                    ORDER BY rank
                    LIMIT ?""",
                 (query, limit),
@@ -282,6 +351,20 @@ class DatabaseManager(BaseStorage):
             log.warning("fts_search_failed", error=str(exc), query=query)
             return []
 
+    async def active_obs_ids(self, ids: list[int]) -> list[int]:
+        """Return the subset of ids whose observations are still active."""
+        if not ids:
+            return []
+        conn = await self._ensure_init()
+        placeholders = ",".join("?" * len(ids))
+        async with conn.execute(
+            f"SELECT id FROM observations WHERE id IN ({placeholders}) AND status = 'active'",
+            ids,
+        ) as cur:
+            rows = await cur.fetchall()
+        active = {row[0] for row in rows}
+        return [obs_id for obs_id in ids if obs_id in active]
+
     async def get_observations(self, ids: list[int]) -> list[dict]:
         """Batch fetch full observation records by IDs."""
         if not ids:
@@ -290,7 +373,7 @@ class DatabaseManager(BaseStorage):
         placeholders = ",".join("?" * len(ids))
         try:
             async with conn.execute(
-                f"SELECT * FROM observations WHERE id IN ({placeholders}) ORDER BY created_at",
+                f"SELECT * FROM observations WHERE id IN ({placeholders}) AND status = 'active' ORDER BY created_at",
                 ids,
             ) as cur:
                 rows = await cur.fetchall()
@@ -303,7 +386,7 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         try:
             async with conn.execute(
-                "SELECT created_at, session_id FROM observations WHERE id = ?",
+                "SELECT created_at, session_id FROM observations WHERE id = ? AND status = 'active'",
                 (obs_id,),
             ) as cur:
                 anchor = await cur.fetchone()
@@ -312,12 +395,12 @@ class DatabaseManager(BaseStorage):
             ts, sid = anchor[0], anchor[1]
             before_query = """
                 SELECT * FROM observations
-                WHERE created_at < ? AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at < ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at DESC LIMIT ?
             """
             after_query = """
                 SELECT * FROM observations
-                WHERE created_at >= ? AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at >= ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at ASC LIMIT ?
             """
             async with conn.execute(before_query, (ts, sid, sid, window)) as cur:
@@ -436,12 +519,77 @@ class DatabaseManager(BaseStorage):
     ) -> list[dict]:
         conn = await self._ensure_init()
         async with conn.execute(
-            """SELECT * FROM observations WHERE session_id = ?
+            """SELECT * FROM observations WHERE session_id = ? AND status = 'active'
                ORDER BY created_at DESC LIMIT ?""",
             (session_id, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    async def has_retracted_observation_match(self, query: str) -> bool:
+        """Return True when the query overlaps content from retracted observations."""
+        terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]{3,}", query)]
+        if not terms:
+            return False
+
+        clauses = " OR ".join("LOWER(content) LIKE ?" for _ in terms)
+        params = [f"%{term}%" for term in terms]
+        conn = await self._ensure_init()
+        async with conn.execute(
+            f"SELECT 1 FROM observations WHERE status = 'retracted' AND ({clauses}) LIMIT 1",
+            params,
+        ) as cur:
+            return await cur.fetchone() is not None
+
+    async def retract_observation(self, obs_id: int, reason: str | None = None) -> bool:
+        """Mark an observation retracted and store a non-retrievable audit reason."""
+        conn = await self._ensure_init()
+        try:
+            await conn.execute("BEGIN")
+            async with conn.execute(
+                "SELECT session_id FROM observations WHERE id = ?", (obs_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await conn.rollback()
+                return False
+            session_id = row[0]
+            await conn.execute(
+                "UPDATE observations SET status = 'retracted' WHERE id = ?", (obs_id,)
+            )
+            await conn.execute("DELETE FROM content_fts WHERE obs_id = ?", (obs_id,))
+            if session_id is not None:
+                await conn.execute(
+                    "UPDATE sessions SET summary = NULL WHERE id = ?", (session_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM summaries WHERE session_id = ?", (session_id,)
+                )
+            if reason:
+                await conn.execute(
+                    "INSERT INTO retraction_audit (obs_id, reason) VALUES (?, ?)",
+                    (obs_id, reason),
+                )
+            await conn.commit()
+            return True
+        except Exception as exc:
+            await conn.rollback()
+            raise StorageError(f"retract_observation failed: {exc}") from exc
+
+    async def get_recent_observations_by_age(
+        self, days: int = 7, limit: int = 500
+    ) -> list[dict]:
+        """Return recent observations newest first for local insight tools."""
+        conn = await self._ensure_init()
+        since = time.time() - max(days, 1) * 86400
+        async with conn.execute(
+            """SELECT * FROM observations
+               WHERE created_at >= ? AND status = 'active'
+               ORDER BY created_at DESC LIMIT ?""",
+            (since, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
