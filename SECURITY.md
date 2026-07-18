@@ -16,7 +16,9 @@ controls before being exposed to untrusted networks.
   before writing into the vault. Restore now rejects absolute paths and `..`
   traversal that would escape the configured vault.
 - **Executor boundary:** the current Python executor is a restricted local
-  subprocess, not a hostile-code sandbox. Production deployments should run any
+  subprocess, not a hostile-code sandbox. It now scrubs inherited environment
+  variables, blocks common process/network imports by default, and uses
+  path-aware containment checks, but production deployments should still run any
   agent code execution inside an OS/container boundary with a scrubbed
   environment, no network by default, a read-only filesystem, and CPU/memory
   limits.

@@ -121,3 +121,35 @@ class TestAvailableFunctions:
         )
         assert not error
         assert locals_dict["result"] is False
+
+
+class TestRestrictedExecutorHardening:
+    def test_environment_is_scrubbed(self):
+        os.environ["SUPERMEM_TEST_SECRET"] = "do-not-leak"
+        locals_dict, error = execute_sandboxed_code(
+            "import os\nsecret = os.environ.get('SUPERMEM_TEST_SECRET')"
+        )
+        assert locals_dict is not None
+        assert "Import of 'os' is denied" in error
+
+    def test_denies_network_imports(self):
+        locals_dict, error = execute_sandboxed_code("import socket")
+        assert locals_dict is not None
+        assert "Import of 'socket' is denied" in error
+
+    def test_commonpath_blocks_prefix_escape(self, tmp_path):
+        allowed = tmp_path / "vault"
+        sibling = tmp_path / "vault-evil"
+        allowed.mkdir()
+        sibling.mkdir()
+        outside = sibling / "secret.txt"
+        code = (
+            "try:\n"
+            f"    open('{outside}', 'w').write('escaped')\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+        assert locals_dict.get("escaped") is False
+        assert not outside.exists()

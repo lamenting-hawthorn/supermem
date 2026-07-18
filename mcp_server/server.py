@@ -8,6 +8,7 @@ Tools:
   list_open_tasks    — local open-loop/task extraction
   suggest_followups  — actionable follow-up suggestions
   list_day_summaries — local daily summaries
+  retract_observation — mark a memory retracted/forgotten
 
 Auth:    Bearer token via SUPERMEM_API_KEY (disabled when unset).
 Rate:    SUPERMEM_RATE_LIMIT requests/min per client (default 60).
@@ -456,6 +457,26 @@ async def list_day_summaries(
     except Exception as exc:
         log.warning("list_day_summaries_error", error=str(exc))
         return json.dumps({"error": str(exc), "summaries": []})
+
+
+@mcp.tool
+async def retract_observation(
+    obs_id: int,
+    reason: str = "",
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Retract an observation so it no longer appears in retrieval results."""
+    denial = _guard_tool(ctx, "retract_observation")
+    if denial:
+        return json.dumps({"error": denial, "retracted": False})
+    if _ctx.db is None:
+        return json.dumps({"error": "Database not initialised", "retracted": False})
+    try:
+        retracted = await _ctx.db.retract_observation(obs_id, reason=reason or None)
+        return json.dumps({"obs_id": obs_id, "retracted": retracted}, indent=2)
+    except Exception as exc:
+        log.warning("retract_observation_error", obs_id=obs_id, error=str(exc))
+        return json.dumps({"error": str(exc), "retracted": False})
 
 
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────

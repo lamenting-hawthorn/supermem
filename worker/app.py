@@ -17,6 +17,7 @@ Endpoints:
   GET  /open-tasks    local open-loop/task extraction
   GET  /followups     actionable follow-up suggestions
   GET  /day-summaries local daily summaries
+  POST /observations/{id}/retract mark an observation retracted
 
 Auth: Bearer token from SUPERMEM_API_KEY header. Disabled when env var unset.
 """
@@ -302,6 +303,26 @@ async def day_summaries(
     return JSONResponse(
         {"days": days, "summaries": summarize_days(observations, days=days)}
     )
+
+
+class RetractionRequest(BaseModel):
+    reason: str = ""
+
+
+@app.post("/observations/{obs_id}/retract")
+async def retract_observation_endpoint(
+    obs_id: int,
+    body: RetractionRequest | None = None,
+    _: None = Depends(_require_auth),
+) -> JSONResponse:
+    if not _db:
+        raise HTTPException(503, "Database not available")
+    retracted = await _db.retract_observation(
+        obs_id, reason=(body.reason if body else None)
+    )
+    if not retracted:
+        raise HTTPException(404, "Observation not found")
+    return JSONResponse({"obs_id": obs_id, "retracted": True})
 
 
 @app.post("/index/rebuild")

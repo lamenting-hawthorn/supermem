@@ -95,6 +95,7 @@ Query
 | `list_open_tasks` | `days: int = 14`, `limit: int = 20` | JSON with likely unresolved tasks | Local heuristic open-loop inbox inspired by ambient memory tools |
 | `suggest_followups` | `days: int = 14`, `limit: int = 10` | JSON with next-action suggestions | Turns open tasks into concise follow-up prompts |
 | `list_day_summaries` | `days: int = 7` | JSON day summaries | Keywords, highlights, and open-loop counts from recent observations |
+| `retract_observation` | `obs_id: int`, `reason: str = ""` | JSON retraction status | Marks stale or incorrect memories as retracted so retrieval ignores them |
 
 ### Progressive Disclosure Pattern
 
@@ -191,6 +192,7 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 | `/open-tasks` | GET | Local heuristic open-loop/task extraction |
 | `/followups` | GET | Follow-up suggestions derived from recent open tasks |
 | `/day-summaries` | GET | Local day summaries with keywords and highlights |
+| `/observations/{id}/retract` | POST | Mark an observation retracted so retrieval ignores it |
 
 Auth: `Authorization: Bearer <SUPERMEM_API_KEY>`. Disabled when env var is unset.
 

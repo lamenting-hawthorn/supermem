@@ -198,6 +198,28 @@ class TestSupermemHybridTool:
         assert data["observations"] == []
 
 
+class TestRetractObservationTool:
+    """retract_observation() tool handler."""
+
+    @pytest.mark.asyncio
+    async def test_retract_success(self, monkeypatch):
+        mock_db = AsyncMock()
+        mock_db.retract_observation.return_value = True
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        result = await srv.retract_observation.fn(obs_id=42, reason="stale")
+        data = json.loads(result)
+        assert data["retracted"] is True
+        mock_db.retract_observation.assert_awaited_once_with(42, reason="stale")
+
+    @pytest.mark.asyncio
+    async def test_retract_no_db(self, monkeypatch):
+        monkeypatch.setattr(srv._ctx, "db", None)
+        result = await srv.retract_observation.fn(obs_id=42)
+        data = json.loads(result)
+        assert data["retracted"] is False
+        assert "error" in data
+
+
 class TestGetTimelineTool:
     """get_timeline() tool handler."""
 

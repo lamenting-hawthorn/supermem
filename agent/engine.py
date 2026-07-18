@@ -10,9 +10,38 @@ import base64
 
 from agent.settings import SANDBOX_TIMEOUT
 
-# Configure a logger for the sandbox (in real use, configure handlers/level as needed)
+# Configure a logger for the restricted local executor.
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # or DEBUG for more verbosity
+logger.setLevel(logging.INFO)
+
+DEFAULT_BLACKLIST = [
+    "os.system",
+    "os.popen",
+    "subprocess.Popen",
+    "subprocess.run",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+]
+DENIED_IMPORT_ROOTS = {
+    "os",
+    "sys",
+    "socket",
+    "subprocess",
+    "http",
+    "urllib",
+    "requests",
+}
+
+
+def _is_within_path(path: str, root: str) -> bool:
+    """Return True when path resolves inside root using path-aware comparison."""
+    try:
+        return os.path.commonpath(
+            [os.path.realpath(path), os.path.realpath(root)]
+        ) == os.path.realpath(root)
+    except ValueError:
+        return False
 
 
 def _run_user_code(
@@ -48,9 +77,9 @@ def _run_user_code(
                     file if isinstance(file, str) else getattr(file, "name", str(file))
                 )
                 full_path = os.path.abspath(path if path is not None else "")
-                if not full_path.startswith(allowed):
+                if not _is_within_path(full_path, allowed):
                     raise PermissionError(
-                        f"Access to '{full_path}' is denied by sandbox."
+                        f"Access to '{full_path}' is denied by restricted executor."
                     )
                 return orig_open(file, *args, **kwargs)
 
@@ -62,9 +91,9 @@ def _run_user_code(
 
             def secure_remove(path, *args, **kwargs):
                 full_path = os.path.abspath(path)
-                if not full_path.startswith(allowed):
+                if not _is_within_path(full_path, allowed):
                     raise PermissionError(
-                        f"Removal of '{full_path}' is denied by sandbox."
+                        f"Removal of '{full_path}' is denied by restricted executor."
                     )
                 return orig_remove(path, *args, **kwargs)
 
@@ -75,9 +104,11 @@ def _run_user_code(
             def secure_rename(src, dst, *args, **kwargs):
                 full_src = os.path.abspath(src)
                 full_dst = os.path.abspath(dst)
-                if not full_src.startswith(allowed) or not full_dst.startswith(allowed):
+                if not _is_within_path(full_src, allowed) or not _is_within_path(
+                    full_dst, allowed
+                ):
                     raise PermissionError(
-                        "Rename operation outside allowed path is denied by sandbox."
+                        "Rename operation outside allowed path is denied by restricted executor."
                     )
                 return orig_rename(src, dst, *args, **kwargs)
 
@@ -109,37 +140,38 @@ def _run_user_code(
                         )
             # Additionally, we can ensure __builtins__ in the exec env doesn't contain them (handled below in exec)
 
-        # If allowed, handle package installations inside sandbox (in case code itself triggers ImportError)
-        if allow_installs:
-            # We will install missing imports on the fly during execution if an ImportError occurs.
-            # One approach: wrap __import__ to catch failed imports and pip install.
-            orig_import = builtins.__import__
+        orig_import = builtins.__import__
 
-            def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
+        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
+            root_name = name.split(".")[0]
+            if root_name in DENIED_IMPORT_ROOTS:
+                raise ImportError(
+                    f"Import of '{root_name}' is denied by restricted executor."
+                )
+            try:
+                return orig_import(name, globals, locals, fromlist, level)
+            except ImportError as e:
+                if not allow_installs:
+                    raise
+                pkg = name.split(".")[0]
+                logger.info("Restricted executor: attempting to install '%s'", pkg)
                 try:
-                    return orig_import(name, globals, locals, fromlist, level)
-                except ImportError as e:
-                    pkg = name.split(".")[0]
-                    logger.info(
-                        "Sandbox: attempting to install missing package '%s'", pkg
+                    subprocess.run(
+                        [sys.executable, "-m", "pip", "install", pkg],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
                     )
-                    try:
-                        subprocess.run(
-                            [sys.executable, "-m", "pip", "install", pkg],
-                            check=True,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                    except Exception as inst_err:
-                        # If installation fails, re-raise the original ImportError
-                        logger.error(
-                            "Sandbox: failed to install package %s: %s", pkg, inst_err
-                        )
-                        raise e
-                    # Retry the import after installation
-                    return orig_import(name, globals, locals, fromlist, level)
+                except Exception as inst_err:
+                    logger.error(
+                        "Restricted executor: failed to install package %s: %s",
+                        pkg,
+                        inst_err,
+                    )
+                    raise e
+                return orig_import(name, globals, locals, fromlist, level)
 
-            builtins.__import__ = custom_import
+        builtins.__import__ = custom_import
 
         # Prepare an isolated execution namespace. We use an empty globals dict with a fresh builtins.
         exec_globals = {"__builtins__": builtins.__dict__}
@@ -156,14 +188,14 @@ def _run_user_code(
         except Exception as e:
             # Catch any exception and format it
             tb = traceback.format_exc()
-            error_msg = f"Exception in sandboxed code:\n{tb}"
+            error_msg = f"Exception in restricted code:\n{tb}"
             if log:
                 logger.error("Sandbox: code raised an exception: %s", e)
         except SystemExit as e:
             # Handle sys.exit calls (which raise SystemExit)
             code_val = e.code if isinstance(e.code, int) or e.code else 0
             if code_val != 0:
-                error_msg = f"Sandboxed code called sys.exit({code_val})"
+                error_msg = f"Restricted code called sys.exit({code_val})"
                 if log:
                     logger.warning(
                         "Sandbox: code exited with non-zero status %s", code_val
@@ -191,7 +223,8 @@ def _run_user_code(
         # Catch any unhandled exceptions in the worker process
         if log:
             logger.error(
-                "Unhandled exception in sandbox worker: %s", traceback.format_exc()
+                "Unhandled exception in restricted executor worker: %s",
+                traceback.format_exc(),
             )
         return None, f"Sandbox worker error: {str(e)}"
 
@@ -212,7 +245,7 @@ def execute_sandboxed_code(
 
     Parameters:
         code (str): The Python code to execute.
-        timeout (int): Maximum execution time in seconds for the sandboxed code (default 10 seconds).
+        timeout (int): Maximum execution time in seconds for the restricted code (default 10 seconds).
         allow_installs (bool): If True, allow installing missing packages via pip (default False).
         requirements_path (str): Path to a requirements.txt file to install before execution.
         allowed_path (str): Directory path that the code is allowed to access for file I/O.
@@ -274,13 +307,16 @@ def execute_sandboxed_code(
         "code": code,
         "allow_installs": allow_installs,
         "allowed_path": allowed_path,
-        "blacklist": blacklist or [],
+        "blacklist": list(dict.fromkeys(DEFAULT_BLACKLIST + (blacklist or []))),
         "available_functions": available_functions or {},
         "log": log,
     }
 
-    env = os.environ.copy()
-    env["SANDBOX_PARAMS"] = base64.b64encode(pickle.dumps(params)).decode()
+    env = {
+        "SANDBOX_PARAMS": base64.b64encode(pickle.dumps(params)).decode(),
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }
 
     try:
         result = subprocess.run(
@@ -292,7 +328,7 @@ def execute_sandboxed_code(
         )
     except subprocess.TimeoutExpired:
         logger.error(
-            "Sandboxed code exceeded time limit of %d seconds; terminating.", timeout
+            "Restricted code exceeded time limit of %d seconds; terminating.", timeout
         )
         return None, f"TimeoutError: Code execution exceeded {timeout} seconds."
 
