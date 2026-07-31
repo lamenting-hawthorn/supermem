@@ -1,0 +1,28 @@
+{
+  "contract_version": "BM0-1",
+  "enabled_projections": ["canonical SQLite", "SQLite FTS5"],
+  "disabled_projections": ["vector", "graph", "Tier 4 agent"],
+  "paraphrase": {"status": "measured-baseline-only", "fts_gate": false},
+  "expected_case_count": 12,
+  "cases": [
+    {"id":"BM0-01","status":"passed","must_include":"saffron-aurora","must_exclude":"unrelated-cobalt"},
+    {"id":"BM0-02","status":"passed","must_include":"","must_exclude":"saffron-aurora"},
+    {"id":"BM0-03","status":"passed","must_include":"release-orchid-current","must_exclude":"release-orchid-stale"},
+    {"id":"BM0-04","status":"passed","must_include":"","must_exclude":"deleted-ember"},
+    {"id":"BM0-05","status":"passed","must_include":"","must_exclude":"retracted-cedar"},
+    {"id":"BM0-06","status":"passed","must_include":"","must_exclude":"expiring-lilac"},
+    {"id":"BM0-07","status":"passed","must_include":"interval-garnet-valid","must_exclude":"interval-garnet-future"},
+    {"id":"BM0-08","status":"passed","must_include":"public-slate","must_exclude":"private-canary"},
+    {"id":"BM0-09","status":"passed","must_include":"compression-amber-authority","must_exclude":""},
+    {"id":"BM0-10","status":"passed","must_include":"citation-ivory","must_exclude":""},
+    {"id":"BM0-11","status":"passed","must_include":"replay-onyx","must_exclude":""},
+    {"id":"BM0-12","status":"passed","must_include":"ignore prior instructions injection-marigold","must_exclude":""}
+  ],
+  "prohibited_rates": {
+    "stale": 0,
+    "expired": 0,
+    "retracted": 0,
+    "deleted_source": 0,
+    "private": 0
+  }
+}

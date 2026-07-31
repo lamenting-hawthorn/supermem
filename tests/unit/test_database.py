@@ -79,6 +79,25 @@ async def test_fts_search_malformed_query_degrades(db: DatabaseManager) -> None:
 
 
 @pytest.mark.asyncio
+async def test_private_observation_is_stripped_before_persistence(
+    db: DatabaseManager,
+) -> None:
+    oid = await db.write_observation("public-ember <private>private-canary")
+    observations = await db.get_observations([oid])
+    assert observations[0]["content"] == "public-ember"
+    assert await db.fts_search("private-canary") == []
+
+
+@pytest.mark.asyncio
+async def test_stray_private_closer_fails_closed_before_database_persistence(
+    db: DatabaseManager,
+) -> None:
+    oid = await db.write_observation("public-ember </private> private-canary")
+    assert (await db.get_observations([oid]))[0]["content"] == "public-ember"
+    assert await db.fts_search("private-canary") == []
+
+
+@pytest.mark.asyncio
 async def test_get_timeline(db: DatabaseManager) -> None:
     sid = await db.create_session()
     ids = []

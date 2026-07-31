@@ -86,17 +86,15 @@ class MemoryCompressor:
 
             obs_ids = [o["id"] for o in obs_list if "id" in o]
             await self._db.write_summary(session_id, summary, obs_ids)
-            # Delete source observations — summary is now the canonical record.
-            # This keeps the DB compact and prevents stale noise from degrading
-            # FTS5 retrieval quality over time.
-            for obs_id in obs_ids:
-                await self._db.delete(obs_id)
+            # A summary is derived context, never the only retrievable authority.
+            # Retaining source observations avoids silently destroying recall or
+            # provenance when the summary is incomplete or incorrect.
             log.info(
                 "memory_compressed",
                 session_id=session_id,
                 obs_count=len(obs_list),
                 summary_len=len(summary),
-                deleted=len(obs_ids),
+                retained=len(obs_ids),
             )
         except Exception as exc:
             log.warning("compression_failed", session_id=session_id, error=str(exc))

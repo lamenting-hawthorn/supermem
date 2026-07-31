@@ -56,6 +56,17 @@ async def test_index_file_creates_entity(
 
 
 @pytest.mark.asyncio
+async def test_index_file_stray_private_closer_fails_closed(
+    indexer: VaultIndexer, db: DatabaseManager, vault: Path
+) -> None:
+    note = vault / "Private.md"
+    note.write_text("public-slate </private> private-canary")
+    await indexer.index_file(note)
+    assert await db.fts_search("canary") == []
+    assert await db.fts_search("public")
+
+
+@pytest.mark.asyncio
 async def test_index_file_skips_unchanged(
     indexer: VaultIndexer, db: DatabaseManager, vault: Path
 ) -> None:

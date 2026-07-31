@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from supermem.config import SUPERMEM_VAULT_PATH
 from supermem.errors import VaultIndexError
 from supermem.logging import get_logger
+from supermem.privacy import PrivacyFilter
 
 if TYPE_CHECKING:
     from supermem.storage.database import DatabaseManager
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+?)(?:[|#][^\[\]]*)?\]\]")
-_PRIVATE_RE = re.compile(r"<private>.*?</private>", re.DOTALL | re.IGNORECASE)
 
 
 class VaultIndexer:
@@ -161,7 +161,7 @@ class VaultIndexer:
 
     @staticmethod
     def _strip_private(content: str) -> str:
-        return _PRIVATE_RE.sub("", content)
+        return PrivacyFilter.strip(content)
 
     def _path_to_entity_name(self, path: Path) -> str:
         try:
