@@ -224,6 +224,63 @@ def test_file_ingest_is_contained_and_rejects_symlink_escape(
         store.ingest_file(vault, Path("escape.md"))
 
 
+def test_file_ingest_percent_encodes_canonical_unicode_path(
+    store: LocalCitedMemory, tmp_path: Path
+) -> None:
+    vault = tmp_path / "vault"
+    nested = vault / "Team Notes"
+    nested.mkdir(parents=True)
+    relative = Path("Team Notes/Meeting ü.md")
+    (vault / relative).write_text("encoded-path-cinder")
+
+    revision = store.ingest_file(vault, relative)
+
+    assert revision.source_uri == "memory://vault/Team%20Notes/Meeting%20%C3%BC.md"
+    assert len(store.retrieve(query("encoded-path-cinder"))) == 1
+    with pytest.raises(ValueError, match="canonical memory"):
+        store.ingest_markdown(
+            "memory://vault/%2E%2E/escape.md", "encoded-traversal-cinder"
+        )
+
+
+def test_identical_content_with_changed_lifecycle_metadata_creates_revision(
+    store: LocalCitedMemory,
+) -> None:
+    uri = "memory://tests/metadata-renewal.md"
+    first = store.ingest_markdown(uri, "renewal-cinder", expires_at=1.0)
+    second = store.ingest_markdown(uri, "renewal-cinder", expires_at=4_000_000_000.0)
+    repeated = store.ingest_markdown(uri, "renewal-cinder", expires_at=4_000_000_000.0)
+
+    assert second.revision == first.revision + 1
+    assert repeated == second
+    assert len(store.retrieve(query("renewal-cinder"))) == 1
+    rows = store._conn.execute(
+        "SELECT source_revision, expires_at, lifecycle_state FROM bm0_memory_records "
+        "WHERE source_id = ? ORDER BY source_revision",
+        (first.source_id,),
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (first.revision, 1.0, "superseded"),
+        (second.revision, 4_000_000_000.0, "active"),
+    ]
+
+
+@pytest.mark.parametrize("field", ["effective_from", "effective_until", "expires_at"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_lifecycle_timestamps_are_rejected(
+    store: LocalCitedMemory, field: str, value: float
+) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        store.ingest_markdown(
+            f"memory://tests/non-finite-{field}.md",
+            "non-finite-cinder",
+            **{field: value},
+        )
+
+    with pytest.raises(ValueError, match="finite"):
+        query("non-finite-cinder", temporal_bound=value)
+
+
 def test_timeout_and_append_only_event_ledger(tmp_path: Path) -> None:
     clock_values = iter((0.0, 2.0, 3.0, 4.0))
     store = LocalCitedMemory(

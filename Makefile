@@ -224,8 +224,4 @@ serve-http:
 
 # Primary loopback MCP HTTP server. Remote production remains unsupported.
 serve-mcp-http:
-	@if [ -z "$$SUPERMEM_API_KEY" ]; then \
-		echo "ERROR: SUPERMEM_API_KEY is required for MCP HTTP."; \
-		exit 1; \
-	fi
 	FASTMCP_LOG_LEVEL=INFO MCP_TRANSPORT=http MCP_HOST=127.0.0.1 uv run python -m mcp_server.server

@@ -2,16 +2,15 @@
 
 ## Status
 
-**LOCAL IMPLEMENTATION AND EXACT-TIP VERIFICATION COMPLETE — UNCOMMITTED AND
-UNAPPROVED; NO NEW FORMAL SECURITY SCAN OR INDEPENDENT REVIEW WAS RUN IN THE
-LATEST USER-DIRECTED PHASE.**
+**PR #15 IS OPEN; HOSTED CI PASSED AT `03193f5`. SIX REVIEW-CORRECTION
+REGRESSIONS NOW PASS LOCALLY BUT REMAIN UNCOMMITTED AND UNPUSHED. THE CANDIDATE
+IS NOT MERGE-APPROVED AND HAS NO RELEASE CLAIM.**
 
-This is the explicitly authorized third remediation slice for the independent
-veto blockers. It is an uncommitted candidate based on detached HEAD
-`a101015eb4cb3de558dd635a5eaecca09d292fac` in the isolated
-`/Users/raghav/.codex/worktrees/e554/supermem` worktree. No commit, push,
-merge, deployment, publication, external resource creation, or primary-checkout
-change was performed.
+This is the isolated hardening branch `codex/supermem-security-hardening`, based
+on BM-0 commit `a101015eb4cb3de558dd635a5eaecca09d292fac`. PR #15 contains the
+BM-0 parent, the hardening commit `90c19df`, and the standard-checkout CI fix
+`03193f5`. No merge, deployment, publication, or primary-checkout change has
+been performed.
 
 The initial change-aware scan sealed five validated regressions in this dirty
 candidate: pre-session primary-HTTP auth, primary HTTP loopback binding,
@@ -57,7 +56,8 @@ executor run, or `agent_reply` persistence.
 4. Ordinary restricted-executor reads through `open`, `Path.read_text`,
    `Path.read_bytes`, `_io.open`, `io.FileIO`, and `io.open_code` do not return
    private blocks. Raw byte backends are denied; `update_file` rejects a
-   private-bearing file without mutation; direct `posix`/`nt` imports are
+   private-bearing file without mutation; rename/replace/link operations cannot
+   mutate a private source or destination; direct `posix`/`nt` imports are
    denied; ordinary public writes remain.
 5. Notion accepts valid ZIP exports larger than 65,557 bytes while validating
    EOCD and a bounded central directory from one opened source before `ZipFile`
@@ -70,6 +70,10 @@ executor run, or `agent_reply` persistence.
    navigation, file content inspection, and metadata probes remain unavailable
    until a source-aware lifecycle broker enforces active/retracted/deleted
    source policy.
+9. File-backed BM-0 source URIs use canonical UTF-8 percent-encoded path
+   segments; content-identical metadata changes create immutable revisions;
+   lifecycle timestamps are finite; and the Worker dashboard supplies its
+   bearer only from in-memory user input while escaping imported summaries.
 
 ## Seven-finding acceptance matrix
 
@@ -494,8 +498,59 @@ and byte-identical `cases.jsonl` SHA-256
 - `/private/tmp/supermem-bm0-ci-fix-a.XXXXXX.aQkKwP6r10/bm0-20260809T150310809419Z-ed4faf36af00`
 - `/private/tmp/supermem-bm0-ci-fix-b.XXXXXX.SqwETzlpV5/bm0-20260809T150310810037Z-ed4faf36af00`
 
-This is local macOS/Python 3.11 parity evidence. The GitHub Linux runner remains
-the authority for closing the hosted CI failure after the correction is pushed.
+This local macOS/Python 3.11 parity evidence was subsequently confirmed by
+GitHub Actions run `31320247107`: lint/type/test, package build, and Docker build
+all passed at commit `03193f5`.
+
+## PR review corrections
+
+Codex review on PR #15 reported six actionable boundaries. Before product
+edits, the eventual regression set produced 15 failures: private destination
+replacement destroyed its canary; spaced/Unicode paths failed ingestion;
+content-identical expiry renewal returned the stale revision; nine `NaN`/infinity
+timestamp cases were accepted; the dashboard supplied no bearer; keyless HTTP
+startup did not fail; and the Make target rejected dotenv-only configuration.
+
+The local correction now:
+
+- rejects restricted-executor rename/replace/link operations involving a
+  private file or a directory while retaining a public `Path.replace` control;
+- constructs canonical UTF-8 percent-encoded memory URI path segments and
+  rejects encoded traversal/non-canonical encodings;
+- creates a new immutable source revision when lifecycle metadata changes while
+  retaining exact content-plus-metadata idempotency;
+- rejects non-finite lifecycle and query timestamps before SQLite persistence;
+- prompts for the Worker bearer, holds it in page memory only, attaches it to
+  API calls, escapes imported summaries/fields, and removes the stale Tier-4 UI
+  option; and
+- lets Python load `.env`, then fails primary HTTP startup if the resolved key
+  remains empty.
+
+Exact local evidence after correction:
+
+```text
+Focused six-comment regression set: 15 passed, 4 existing warnings.
+Adjacent engine/BM-0/MCP/security/process suite: 174 passed, 4 existing warnings.
+Python 3.11 full coverage suite: 353 passed, 2 skipped, 4 existing warnings;
+67.25% coverage and the 60% gate passed.
+Ruff 0.15.12 changed tests and CI source scope: passed.
+Black --target-version py311 --check .: 108 files unchanged.
+mypy 1.20.2 supermem/: passed with no diagnostics.
+Worker dashboard JavaScript node --check: passed.
+git diff --check: passed.
+```
+
+Two fresh BM-0 roots each passed 12/12 with normalized digest
+`ed4faf36af0092bcc0697d8c70391f98b9d5350c855d8cc7cdfbb1081998f289`
+and byte-identical cases SHA-256
+`6fe1fabc30d294d3ae2998240913bbe4d9cc8482bbd2908e1877952cd40fc8d8`:
+
+- `/private/tmp/supermem-bm0-pr15-review-a.XXXXXX.H7Jr0i54Bh/bm0-20260809T153232700905Z-ed4faf36af00`
+- `/private/tmp/supermem-bm0-pr15-review-b.XXXXXX.Tftr1s0hov/bm0-20260809T153232700881Z-ed4faf36af00`
+
+These are static, unit, local integration/process, and local SQLite/FTS proof
+only. Review replies, thread resolution, commit, and push remain separately
+authorized actions.
 
 ## Residuals and required next action
 
@@ -511,8 +566,8 @@ the authority for closing the hosted CI failure after the correction is pushed.
   test did not reproduce the SQLite warnings; their allocation source was not
   established in this slice, so they remain a local test-hygiene residual.
 
-No new formal security scan or independent reviewer verdict was requested or
-run in this latest phase. Before candidate acceptance or release, that omitted
-gate remains explicit unless the user changes the release policy. No commit or
-integration authority has been granted; the next authorized action is root
-exact-diff review and handoff, not commit, deployment, or publication.
+No new formal security scan or independent veto review was requested or run in
+this latest phase. Before candidate acceptance or release, that omitted gate
+remains explicit unless the user changes the release policy. The current review
+correction is local and uncommitted; no reply, thread resolution, push, merge,
+deployment, or publication is authorized by this receipt.

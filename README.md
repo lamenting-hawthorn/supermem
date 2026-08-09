@@ -248,6 +248,9 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 
 Auth: protected Worker endpoints require `Authorization: Bearer <SUPERMEM_API_KEY>`
 and fail closed when the key is unset.
+The dashboard prompts for this key and keeps it only in the current page's
+JavaScript memory; it does not put the credential in the URL or browser storage,
+and a refresh clears it.
 
 The primary MCP HTTP profile is authenticated, loopback-only, and stateless:
 each request creates no resumable MCP transport session and no MCP session ID is

@@ -57,6 +57,10 @@ validate OAuth issuers, JWKS, audiences, or scopes. Do not expose HTTP mode as a
 multi-tenant internet service without an external auth gateway or future OAuth
 support. The supported local HTTP profile is deliberately stateless; it does not
 support resumable MCP transport sessions or long-lived session state.
+The local Worker dashboard accepts the static bearer through a password field
+and keeps it only in page memory. Imported memory content is escaped before UI
+rendering so it cannot become an HTML credential-reading path. This remains a
+local single-user convenience boundary, not a remote identity system.
 
 Tier 4/raw-vault Agent navigation is intentionally unavailable, including for
 trusted local stdio, because legacy vault files cannot reliably map to active,

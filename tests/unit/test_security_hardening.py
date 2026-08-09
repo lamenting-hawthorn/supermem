@@ -334,6 +334,45 @@ def test_worker_asgi_requires_key_and_caps_tier_four(
 
 
 @pytest.mark.asyncio
+async def test_worker_dashboard_supplies_in_memory_bearer_and_escapes_summaries() -> (
+    None
+):
+    response = await worker_app.index()
+    html = response.body.decode()
+
+    assert 'id="api-key" type="password"' in html
+    assert "Authorization" in html
+    assert "Bearer ${apiKey}" in html
+    assert "localStorage" not in html
+    assert "sessionStorage" not in html
+    assert "escHtml(String(s.summary))" in html
+    assert '<option value="4">' not in html
+
+
+@pytest.mark.asyncio
+async def test_primary_http_startup_rejects_missing_loaded_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_TRANSPORT", "http")
+    monkeypatch.setattr(primary_mcp, "SUPERMEM_API_KEY", "")
+    run_async = AsyncMock()
+    monkeypatch.setattr(primary_mcp.mcp, "run_async", run_async)
+
+    with pytest.raises(ValueError, match="SUPERMEM_API_KEY"):
+        await primary_mcp._main()
+
+    run_async.assert_not_awaited()
+
+
+def test_make_http_target_delegates_dotenv_validation_to_application() -> None:
+    makefile = (Path(__file__).parents[2] / "Makefile").read_text()
+    recipe = makefile.split("serve-mcp-http:", 1)[1].split("\n\n", 1)[0]
+
+    assert 'if [ -z "$$SUPERMEM_API_KEY" ]' not in recipe
+    assert "python -m mcp_server.server" in recipe
+
+
+@pytest.mark.asyncio
 async def test_worker_observation_listing_excludes_retracted_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

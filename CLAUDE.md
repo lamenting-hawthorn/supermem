@@ -123,6 +123,9 @@ Auth: protected endpoints require `Authorization: Bearer <SUPERMEM_API_KEY>`;
 they fail closed when the key is unset. All supported retrieval is capped at
 Tier 3. Primary MCP HTTP is a separate authenticated loopback-only, stateless
 profile: it does not issue or resume MCP transport session IDs.
+The local dashboard accepts the key through its password field, holds it only
+in page memory, and clears it on refresh; it never stores the key in a URL,
+`localStorage`, or `sessionStorage`.
 
 ### Key Design Decisions
 

@@ -16,14 +16,17 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Literal
+from urllib.parse import quote, unquote_to_bytes
 from uuid import uuid4
 
 from supermem.privacy import PrivacyFilter
 
 LifecycleState = Literal["active", "superseded", "retracted", "deleted"]
 _TOKEN_RE = re.compile(r"[\w-]+", re.UNICODE)
+_MEMORY_URI_SEGMENT = r"(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+"
 _MEMORY_URI_RE = re.compile(
-    r"^memory://[a-z0-9][a-z0-9-]*/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$"
+    rf"^memory://[a-z0-9][a-z0-9-]*/(?:{_MEMORY_URI_SEGMENT}/)*"
+    rf"{_MEMORY_URI_SEGMENT}$"
 )
 _MAX_QUERY_CHARS = 1024
 _MAX_RESULTS = 100
@@ -156,8 +159,17 @@ class RetrievalQueryV1:
             raise ValueError("max_records must be between 1 and 100")
         if not 1 <= self.timeout_ms <= _MAX_TIMEOUT_MS:
             raise ValueError("timeout_ms must be between 1 and 5000")
-        if self.temporal_bound is not None and self.temporal_bound < 0:
-            raise ValueError("temporal_bound must be a Unix timestamp")
+        if self.temporal_bound is not None:
+            try:
+                finite_temporal_bound = math.isfinite(self.temporal_bound)
+            except TypeError as exc:
+                raise ValueError(
+                    "temporal_bound must be a finite non-negative Unix timestamp"
+                ) from exc
+            if not finite_temporal_bound or self.temporal_bound < 0:
+                raise ValueError(
+                    "temporal_bound must be a finite non-negative Unix timestamp"
+                )
 
 
 @dataclass(frozen=True)
@@ -206,14 +218,33 @@ class LocalCitedMemory:
 
     @staticmethod
     def _source_id(source_uri: str) -> str:
-        if (
-            not _MEMORY_URI_RE.fullmatch(source_uri)
-            or "/../" in source_uri
-            or "/./" in source_uri
-        ):
+        if not _MEMORY_URI_RE.fullmatch(source_uri):
             raise ValueError(
                 "BM-0 source_uri must be a canonical memory:// URI without path traversal"
             )
+        encoded_path = source_uri.split("/", 3)[3]
+        try:
+            decoded_segments = [
+                unquote_to_bytes(segment).decode("utf-8")
+                for segment in encoded_path.split("/")
+            ]
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                "BM-0 source_uri must use canonical UTF-8 percent encoding"
+            ) from exc
+        for encoded, decoded in zip(
+            encoded_path.split("/"), decoded_segments, strict=True
+        ):
+            if (
+                decoded in {"", ".", ".."}
+                or "/" in decoded
+                or "\\" in decoded
+                or "\x00" in decoded
+                or quote(decoded, safe="-._~") != encoded
+            ):
+                raise ValueError(
+                    "BM-0 source_uri must be a canonical memory:// URI without path traversal"
+                )
         return "src_" + hashlib.sha256(source_uri.encode("utf-8")).hexdigest()[:24]
 
     @staticmethod
@@ -272,8 +303,11 @@ class LocalCitedMemory:
             vault_root, relative_path
         )
         content = source_path.read_text(encoding="utf-8", errors="strict")
+        encoded_relative = "/".join(
+            quote(segment, safe="-._~") for segment in canonical_relative.split("/")
+        )
         return self.ingest_markdown(
-            f"memory://vault/{canonical_relative}",
+            f"memory://vault/{encoded_relative}",
             content,
             effective_from=effective_from,
             effective_until=effective_until,
@@ -319,6 +353,19 @@ class LocalCitedMemory:
         """Persist a sanitized immutable revision and atomically project it to FTS."""
         if not isinstance(content, str) or not content:
             raise ValueError("Markdown content is required")
+        for field_name, field_value in (
+            ("effective_from", effective_from),
+            ("effective_until", effective_until),
+            ("expires_at", expires_at),
+        ):
+            if field_value is None:
+                continue
+            try:
+                finite = math.isfinite(field_value)
+            except TypeError as exc:
+                raise ValueError(f"{field_name} must be a finite timestamp") from exc
+            if not finite:
+                raise ValueError(f"{field_name} must be a finite timestamp")
         if (
             effective_from is not None
             and effective_until is not None
@@ -353,10 +400,39 @@ class LocalCitedMemory:
                     raise ValueError("deleted sources cannot be revived; use a new URI")
                 current = int(source["current_revision"])
                 active = self._conn.execute(
-                    "SELECT content_digest FROM bm0_source_revisions WHERE source_id = ? AND revision = ?",
+                    """SELECT r.content_digest, m.effective_from, m.effective_until,
+                    m.expires_at, m.confidence, m.trust_level, m.sensitivity
+                    FROM bm0_source_revisions AS r
+                    LEFT JOIN bm0_memory_records AS m
+                    ON m.source_id = r.source_id AND m.source_revision = r.revision
+                    WHERE r.source_id = ? AND r.revision = ?""",
                     (source_id, current),
                 ).fetchone()
-                if active is not None and active["content_digest"] == digest:
+                requested_metadata = (
+                    effective_from,
+                    effective_until,
+                    expires_at,
+                    confidence,
+                    trust_level,
+                    sensitivity,
+                )
+                persisted_metadata = (
+                    (
+                        active["effective_from"],
+                        active["effective_until"],
+                        active["expires_at"],
+                        active["confidence"],
+                        active["trust_level"],
+                        active["sensitivity"],
+                    )
+                    if active is not None
+                    else None
+                )
+                if (
+                    active is not None
+                    and active["content_digest"] == digest
+                    and persisted_metadata == requested_metadata
+                ):
                     self._conn.rollback()
                     return self._source_revision(source_id, current)
                 revision, previous = current + 1, current

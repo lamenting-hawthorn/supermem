@@ -293,9 +293,16 @@ def _run_user_code(
 
             def _rename_like_wrapper(original):
                 def wrapped(src, dst, *args, **kwargs):
-                    return original(
-                        _contained_path(src), _contained_path(dst), *args, **kwargs
-                    )
+                    source_path = _contained_path(src)
+                    destination_path = _contained_path(dst)
+                    if os.path.isdir(source_path) or os.path.isdir(destination_path):
+                        raise PermissionError(
+                            "Directory rename/link operations are denied by "
+                            "restricted executor."
+                        )
+                    _reject_private_overwrite(source_path)
+                    _reject_private_overwrite(destination_path)
+                    return original(source_path, destination_path, *args, **kwargs)
 
                 return wrapped
 

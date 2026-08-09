@@ -14,6 +14,11 @@
   #status { font-size: 12px; color: #6b6b70; }
   #status.ok { color: #5dba8c; }
   #status.degraded { color: #e08f3c; }
+  #auth-form { margin-left: auto; display: flex; gap: 8px; }
+  #api-key { width: 220px; background: #101012; border: 1px solid #2a2a2e;
+             border-radius: 6px; padding: 7px 10px; color: #d3d1c7; }
+  #connect-btn { background: #285b45; border: 0; border-radius: 6px;
+                 padding: 7px 12px; color: #d5efe1; cursor: pointer; }
   main { display: grid; grid-template-columns: 320px 1fr; gap: 0; height: calc(100vh - 52px); }
   aside { background: #141416; border-right: 1px solid #2a2a2e;
           overflow-y: auto; padding: 16px; }
@@ -64,20 +69,24 @@
 <header>
   <h1>Recall</h1>
   <span id="status">connecting&hellip;</span>
+  <form id="auth-form">
+    <input id="api-key" type="password" autocomplete="off" spellcheck="false"
+           placeholder="SUPERMEM_API_KEY" aria-label="Supermem API key" />
+    <button id="connect-btn" type="submit">Connect</button>
+  </form>
 </header>
 <main>
   <aside>
     <h2>Sessions</h2>
-    <div id="sessions-list"><div style="color:#55554f;font-size:12px">Loading&hellip;</div></div>
+    <div id="sessions-list"><div style="color:#55554f;font-size:12px">Enter the API key to load sessions.</div></div>
   </aside>
   <section id="content">
     <div id="search-bar">
       <input id="search-input" type="text" placeholder="Search memory&hellip;" />
       <select id="tier-select">
-        <option value="4">All tiers</option>
+        <option value="3">All supported tiers</option>
         <option value="1">FTS5 only</option>
         <option value="2">+ graph</option>
-        <option value="3">+ vector</option>
       </select>
       <button id="search-btn">Search</button>
     </div>
@@ -87,11 +96,20 @@
   </section>
 </main>
 <script>
-const TIER_LABELS = {1:'FTS5',2:'Graph',3:'Vector',4:'Agent'};
+const TIER_LABELS = {1:'FTS5',2:'Graph',3:'Vector'};
 let currentSession = null;
+let apiKey = '';
 
 async function apiFetch(path, opts={}) {
-  const r = await fetch(path, opts);
+  const headers = new Headers(opts.headers || {});
+  if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`);
+  const r = await fetch(path, {...opts, headers});
+  if (r.status === 401) {
+    apiKey = '';
+    const status = document.getElementById('status');
+    status.textContent = '\u26bf API key required';
+    status.className = 'degraded';
+  }
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -100,7 +118,9 @@ async function loadHealth() {
   try {
     const h = await apiFetch('/health');
     const el = document.getElementById('status');
-    el.textContent = h.status === 'ok' ? '\u25cf online' : '\u26a0 degraded';
+    el.textContent = h.status === 'ok'
+      ? (apiKey ? '\u25cf online \u00b7 authenticated' : '\u25cf online \u00b7 API key required')
+      : '\u26a0 degraded';
     el.className = h.status;
   } catch { document.getElementById('status').textContent = '\u2715 offline'; }
 }
@@ -110,12 +130,19 @@ async function loadSessions() {
     const sessions = await apiFetch('/sessions?limit=30');
     const el = document.getElementById('sessions-list');
     if (!sessions.length) { el.innerHTML = '<div style="color:#55554f;font-size:12px">No sessions yet.</div>'; return; }
-    el.innerHTML = sessions.map(s => `
-      <div class="session-item" data-id="${s.id}" onclick="selectSession(${s.id})">
-        <div class="sid">#${s.id} \u2014 ${s.obs_count} obs</div>
-        <div class="summary">${s.summary || '<em style="color:#55554f">no summary</em>'}</div>
-        <div class="meta">${new Date(s.started_at*1000).toLocaleString()}</div>
-      </div>`).join('');
+    el.innerHTML = sessions.map(s => {
+      const id = Number(s.id);
+      const count = Number(s.obs_count) || 0;
+      const summary = s.summary
+        ? escHtml(String(s.summary))
+        : '<em style="color:#55554f">no summary</em>';
+      const started = new Date(Number(s.started_at) * 1000).toLocaleString();
+      return `<div class="session-item" data-id="${id}" onclick="selectSession(${id})">
+        <div class="sid">#${id} \u2014 ${count} obs</div>
+        <div class="summary">${summary}</div>
+        <div class="meta">${started}</div>
+      </div>`;
+    }).join('');
   } catch(e) { console.error(e); }
 }
 
@@ -134,9 +161,11 @@ function renderObs(obs, tierNum) {
     const t = o.tier_used || tierNum || 0;
     const badge = t ? `<span class="tier-badge">${TIER_LABELS[t]||t}</span>` : '';
     const ts = o.created_at ? new Date(o.created_at*1000).toLocaleTimeString() : '';
+    const id = escHtml(String(o.id ?? ''));
+    const type = escHtml(String(o.type || 'obs'));
     return `<div class="obs-card tier-${t}">
-      <div class="obs-meta">id:${o.id} \u00b7 ${ts} \u00b7 ${o.type||'obs'} ${badge}</div>
-      <div class="obs-content">${escHtml(o.content||'')}</div>
+      <div class="obs-meta">id:${id} \u00b7 ${ts} \u00b7 ${type} ${badge}</div>
+      <div class="obs-content">${escHtml(String(o.content || ''))}</div>
     </div>`;
   }).join('');
 }
@@ -144,6 +173,10 @@ function renderObs(obs, tierNum) {
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function doSearch() {
+  if (!apiKey) {
+    document.getElementById('status').textContent = '\u26bf API key required';
+    return;
+  }
   const q = document.getElementById('search-input').value.trim();
   if (!q) return;
   const tier = parseInt(document.getElementById('tier-select').value);
@@ -157,9 +190,24 @@ async function doSearch() {
 
 document.getElementById('search-btn').addEventListener('click', doSearch);
 document.getElementById('search-input').addEventListener('keydown', e => { if (e.key==='Enter') doSearch(); });
+document.getElementById('auth-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = document.getElementById('api-key');
+  const candidate = input.value.trim();
+  input.value = '';
+  if (!candidate) return;
+  apiKey = candidate;
+  try {
+    await loadSessions();
+    await loadHealth();
+  } catch {
+    apiKey = '';
+    document.getElementById('status').textContent = '\u2715 authentication failed';
+    document.getElementById('status').className = 'degraded';
+  }
+});
 
 loadHealth();
-loadSessions();
 setInterval(loadHealth, 30000);
 </script>
 </body>

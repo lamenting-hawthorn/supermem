@@ -704,6 +704,10 @@ async def _main() -> None:
     """Run one supported FastMCP transport inside its own async lifecycle."""
     transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
     if transport == "http":
+        if not SUPERMEM_API_KEY:
+            raise ValueError(
+                "SUPERMEM_API_KEY is required for the primary MCP HTTP transport."
+            )
         host = _validated_loopback_host(os.getenv("MCP_HOST"))
         path = os.getenv("MCP_PATH", "/mcp/")
         port_str = os.getenv("MCP_PORT", "")
