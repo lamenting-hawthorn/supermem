@@ -4,11 +4,45 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 import benchmarks.runner as runner
 from supermem.local_cited_memory import RetrievalTimeoutError
+
+
+def test_git_head_resolves_standard_checkout_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.txt").write_text("checkout-control")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Supermem CI",
+            "-c",
+            "user.email=ci@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "checkout control",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
+
+    assert runner._git_head() == expected
 
 
 def test_bm0_runner_is_complete_redacted_and_deterministic(tmp_path: Path) -> None:

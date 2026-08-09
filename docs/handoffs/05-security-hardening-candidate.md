@@ -458,6 +458,45 @@ temporary-root primary-process stdio/loopback-HTTP tests); and BM-0 local
 SQLite/FTS. No real dependency/device, installed product, staging, or production
 proof exists.
 
+## GitHub CI checkout-layout correction
+
+The first draft-PR check at commit `90c19df8eb07e01774c83e2e514ddd9aec326a55`
+failed only two BM-0 runner tests on GitHub Actions. Standard Actions checkout
+uses a `.git` directory, while `benchmarks.runner._git_head()` incorrectly
+assumed `.git` was a linked-worktree text file. Ruff, Black, mypy, the coverage
+gate, and the other 335 tests passed in that hosted run.
+
+The bounded correction resolves `HEAD` through `git rev-parse --verify HEAD`
+and adds a regression that creates a conventional repository with a `.git`
+directory. Local Python 3.11 evidence matching the CI dependency lock and test
+command is:
+
+```text
+UV_PROJECT_ENVIRONMENT=/private/tmp/supermem-ci311 \
+UV_CACHE_DIR=/private/tmp/supermem-uv-cache uv run --frozen pytest tests/ \
+  --cov=supermem --cov=agent --cov-report=term-missing \
+  --cov-report=xml:/private/tmp/supermem-ci311-coverage.xml \
+  --cov-fail-under=60
+Result: 338 passed, 2 skipped, 4 existing deprecation warnings;
+67.26% coverage and the 60% gate passed.
+
+ruff 0.15.12 check supermem/ agent/ mcp_server/: passed.
+black --check . under the Python 3.11 environment: 108 files unchanged.
+mypy 1.20.2 supermem/: passed with no diagnostics.
+git diff --check: passed.
+```
+
+Two fresh-root BM-0 runs after the correction each passed 12/12 with normalized
+digest `ed4faf36af0092bcc0697d8c70391f98b9d5350c855d8cc7cdfbb1081998f289`
+and byte-identical `cases.jsonl` SHA-256
+`6fe1fabc30d294d3ae2998240913bbe4d9cc8482bbd2908e1877952cd40fc8d8`:
+
+- `/private/tmp/supermem-bm0-ci-fix-a.XXXXXX.aQkKwP6r10/bm0-20260809T150310809419Z-ed4faf36af00`
+- `/private/tmp/supermem-bm0-ci-fix-b.XXXXXX.SqwETzlpV5/bm0-20260809T150310810037Z-ed4faf36af00`
+
+This is local macOS/Python 3.11 parity evidence. The GitHub Linux runner remains
+the authority for closing the hosted CI failure after the correction is pushed.
+
 ## Residuals and required next action
 
 - The Python executor is still not a hostile-code sandbox. Closure/object

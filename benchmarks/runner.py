@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -71,10 +72,16 @@ def candidate_identity(paths: tuple[str, ...] = CANDIDATE_PATHS) -> dict[str, An
 
 
 def _git_head() -> str:
-    head = (REPO_ROOT / ".git").read_text().strip()
-    if head.startswith("gitdir: "):
-        return (Path(head.removeprefix("gitdir: ")) / "HEAD").read_text().strip()
-    return head
+    """Return the resolved commit identity for clones and linked worktrees."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return result.stdout.strip()
 
 
 def _query(text: str, *, temporal_bound: float | None = None) -> RetrievalQueryV1:
