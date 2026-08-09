@@ -2,19 +2,18 @@
 Notion workspace export parser.
 """
 
-import json
 import os
-import zipfile
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
+
+from memory_connectors.archive import open_bounded_zip, safe_extract_zip
 
 from .types import (
     NotionWorkspace,
     NotionPage,
     NotionDatabase,
     NotionBlock,
-    NotionUser,
     NotionProperty,
     BlockType,
     ParsedNotionData,
@@ -37,22 +36,22 @@ class NotionParser:
         Returns:
             ParsedNotionData containing workspace structure
         """
-        export_path = Path(export_path)
+        path = Path(export_path)
 
-        if export_path.is_file() and export_path.suffix == ".zip":
-            return self._parse_zip_export(export_path)
-        elif export_path.is_dir():
-            return self._parse_directory_export(export_path)
+        if path.is_file() and path.suffix == ".zip":
+            return self._parse_zip_export(path)
+        elif path.is_dir():
+            return self._parse_directory_export(path)
         else:
-            raise ValueError(f"Unsupported export format: {export_path}")
+            raise ValueError(f"Unsupported export format: {path}")
 
     def _parse_zip_export(self, zip_path: Path) -> ParsedNotionData:
         """Parse ZIP export file."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(temp_dir)
+            with open_bounded_zip(zip_path) as zip_ref:
+                safe_extract_zip(zip_ref, temp_dir)
 
             # Find the main export directory inside the ZIP
             temp_path = Path(temp_dir)
@@ -275,7 +274,7 @@ class NotionParser:
         self, pages: List[NotionPage]
     ) -> Dict[str, List[NotionPage]]:
         """Organize pages by topics based on titles and content."""
-        topics = {}
+        topics: Dict[str, List[NotionPage]] = {}
 
         # Topic keywords for categorization
         topic_keywords = {

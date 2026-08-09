@@ -14,14 +14,48 @@ TODO(arch): Long-term, extract global state into a ServerContext dataclass
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import Context
+from mcp.server.lowlevel.server import request_ctx
+from starlette.requests import Request
 
 # ── Module under test ─────────────────────────────────────────────────────────
 import mcp_server.server as srv
 from supermem.core.retriever import RetrievalResult
+
+
+def _stdio_context() -> object:
+    return srv._TRUSTED_LOCAL_STDIO
+
+
+def _http_request(auth_header: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/mcp",
+            "headers": [(b"authorization", auth_header.encode())],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 8081),
+            "scheme": "http",
+            "query_string": b"",
+        }
+    )
+
+
+@contextmanager
+def _active_server_context(request: Request | None):
+    token = request_ctx.set(SimpleNamespace(request=request))
+    try:
+        yield Context(srv.mcp)
+    finally:
+        request_ctx.reset(token)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Pure helpers
@@ -80,10 +114,15 @@ class TestFormatObsReply:
         result = srv._format_obs_reply(obs, tier=3)
         assert "real content" in result
 
-    def test_tier_labels(self):
-        for tier, label in [(1, "FTS5"), (2, "graph"), (3, "vector"), (4, "agent")]:
+    def test_supported_tier_labels(self):
+        for tier, label in [(1, "FTS5"), (2, "graph"), (3, "vector")]:
             result = srv._format_obs_reply([{"content": "x"}], tier=tier)
             assert label in result
+
+    def test_unavailable_agent_tier_is_not_presented_as_a_memory_source(self):
+        result = srv._format_obs_reply([{"content": "x"}], tier=4)
+        assert "agent" not in result
+        assert "?" in result
 
 
 class TestReadHelpers:
@@ -99,46 +138,29 @@ class TestReadHelpers:
         monkeypatch.setattr(srv, "FILTERS_PATH", str(f))
         assert srv._read_filters() == "type:meeting"
 
-    def test_read_mlx_model_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(srv, "REPO_ROOT", str(tmp_path))
-        assert srv._read_mlx_model_name("fallback") == "fallback"
-
-    def test_read_mlx_model_present(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(srv, "REPO_ROOT", str(tmp_path))
-        (tmp_path / ".mlx_model_name").write_text("custom-model\n")
-        assert srv._read_mlx_model_name("fallback") == "custom-model"
-
 
 class TestAuthOk:
     """Bearer token auth check."""
 
-    def test_auth_disabled_when_no_key(self, monkeypatch):
+    def test_local_stdio_auth_disabled_when_no_key(self, monkeypatch):
         monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "")
-        ctx = MagicMock()
-        assert srv._auth_ok(ctx) is True
+        monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+        assert srv._auth_ok(_stdio_context()) is True
 
     def test_auth_passes_with_correct_token(self, monkeypatch):
         monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
-        mock_request = MagicMock()
-        mock_request.headers = {"authorization": "Bearer secret123"}
-        ctx = MagicMock()
-        ctx.get_http_request.return_value = mock_request
-        assert srv._auth_ok(ctx) is True
+        with _active_server_context(_http_request("Bearer secret123")) as ctx:
+            assert srv._auth_ok(ctx) is True
 
     def test_auth_fails_with_wrong_token(self, monkeypatch):
         monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
-        mock_request = MagicMock()
-        mock_request.headers = {"authorization": "Bearer wrong"}
-        ctx = MagicMock()
-        ctx.get_http_request.return_value = mock_request
-        assert srv._auth_ok(ctx) is False
+        with _active_server_context(_http_request("Bearer wrong")) as ctx:
+            assert srv._auth_ok(ctx) is False
 
     def test_auth_passes_explicit_stdio_no_http_request(self, monkeypatch):
         monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret123")
         monkeypatch.setenv("MCP_TRANSPORT", "stdio")
-        ctx = MagicMock()
-        ctx.get_http_request.side_effect = RuntimeError("no HTTP context")
-        assert srv._auth_ok(ctx) is True
+        assert srv._auth_ok(_stdio_context()) is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -152,7 +174,7 @@ class TestSupermemHybridTool:
     @pytest.mark.asyncio
     async def test_returns_error_when_retriever_none(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "retriever", None)
-        result = await srv.supermem_hybrid.fn("test query")
+        result = await srv.supermem_hybrid.fn("test query", ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
         assert data["obs_ids"] == []
@@ -168,7 +190,7 @@ class TestSupermemHybridTool:
             {"id": 2, "content": "Bob is her manager"},
         ]
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("alice")
+        result = await srv.supermem_hybrid.fn("alice", ctx=_stdio_context())
         data = json.loads(result)
         assert data["source_tier"] == 1
         assert data["obs_ids"] == [1, 2]
@@ -179,7 +201,7 @@ class TestSupermemHybridTool:
         mock_ret = AsyncMock()
         mock_ret.search.side_effect = RuntimeError("db connection lost")
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("broken query")
+        result = await srv.supermem_hybrid.fn("broken query", ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
 
@@ -190,7 +212,7 @@ class TestSupermemHybridTool:
             obs_ids=[], source_tier=0, latency_ms=0.1
         )
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("zzznomatch")
+        result = await srv.supermem_hybrid.fn("zzznomatch", ctx=_stdio_context())
         data = json.loads(result)
         assert data["obs_ids"] == []
         assert data["observations"] == []
@@ -206,7 +228,9 @@ class TestRetractObservationTool:
         mock_chroma = AsyncMock()
         monkeypatch.setattr(srv._ctx, "db", mock_db)
         monkeypatch.setattr(srv._ctx, "chroma", mock_chroma)
-        result = await srv.retract_observation.fn(obs_id=42, reason="stale")
+        result = await srv.retract_observation.fn(
+            obs_id=42, reason="stale", ctx=_stdio_context()
+        )
         data = json.loads(result)
         assert data["retracted"] is True
         mock_db.retract_observation.assert_awaited_once_with(42, reason="stale")
@@ -215,7 +239,7 @@ class TestRetractObservationTool:
     @pytest.mark.asyncio
     async def test_retract_no_db(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "db", None)
-        result = await srv.retract_observation.fn(obs_id=42)
+        result = await srv.retract_observation.fn(obs_id=42, ctx=_stdio_context())
         data = json.loads(result)
         assert data["retracted"] is False
         assert "error" in data
@@ -227,7 +251,7 @@ class TestGetTimelineTool:
     @pytest.mark.asyncio
     async def test_returns_error_when_retriever_none(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "retriever", None)
-        result = await srv.get_timeline.fn(obs_id=1)
+        result = await srv.get_timeline.fn(obs_id=1, ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
 
@@ -240,7 +264,7 @@ class TestGetTimelineTool:
             {"id": 3, "content": "after", "created_at": 102.0},
         ]
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.get_timeline.fn(obs_id=2, window=1)
+        result = await srv.get_timeline.fn(obs_id=2, window=1, ctx=_stdio_context())
         data = json.loads(result)
         assert len(data) == 3
 
@@ -249,7 +273,7 @@ class TestGetTimelineTool:
         mock_ret = AsyncMock()
         mock_ret.get_timeline.side_effect = RuntimeError("db error")
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.get_timeline.fn(obs_id=99)
+        result = await srv.get_timeline.fn(obs_id=99, ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
 
@@ -260,7 +284,7 @@ class TestGetObservationsTool:
     @pytest.mark.asyncio
     async def test_returns_error_when_retriever_none(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "retriever", None)
-        result = await srv.get_observations.fn(ids=[1, 2])
+        result = await srv.get_observations.fn(ids=[1, 2], ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
 
@@ -272,7 +296,7 @@ class TestGetObservationsTool:
             {"id": 2, "content": "second"},
         ]
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.get_observations.fn(ids=[1, 2])
+        result = await srv.get_observations.fn(ids=[1, 2], ctx=_stdio_context())
         data = json.loads(result)
         assert len(data) == 2
         assert data[0]["content"] == "first"
@@ -282,7 +306,7 @@ class TestGetObservationsTool:
         mock_ret = AsyncMock()
         mock_ret.get_observations.side_effect = RuntimeError("boom")
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.get_observations.fn(ids=[1])
+        result = await srv.get_observations.fn(ids=[1], ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
 
@@ -313,15 +337,13 @@ class TestHTTPServer:
     def test_health(self, client):
         r = client.get("/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "healthy"
+        assert r.json()["status"] == "disabled"
 
     def test_list_tools(self, client):
         r = client.get("/v1/tools")
         assert r.status_code == 200
-        tools = r.json()["tools"]
-        assert len(tools) >= 1
-        assert tools[0]["name"] == "use_memory_agent"
-        assert "inputSchema" in tools[0]
+        assert r.json()["tools"] == []
+        assert r.json()["status"] == "legacy_transport_disabled"
 
     def test_list_tools_legacy(self, client):
         r = client.get("/tools")
@@ -348,18 +370,14 @@ class TestMCPJsonRPC:
         req = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         resp = await server.handle_mcp_request(req)
         assert resp["id"] == 1
-        assert "result" in resp
-        assert resp["result"]["protocolVersion"] == "2024-11-05"
-        assert "capabilities" in resp["result"]
+        assert resp["error"]["code"] == -32004
 
     @pytest.mark.asyncio
     async def test_tools_list(self, server):
         req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         resp = await server.handle_mcp_request(req)
         assert resp["id"] == 2
-        tools = resp["result"]["tools"]
-        assert len(tools) >= 1
-        assert tools[0]["name"] == "use_memory_agent"
+        assert resp["error"]["code"] == -32004
 
     @pytest.mark.asyncio
     async def test_tools_call_missing_question(self, server):
@@ -371,7 +389,7 @@ class TestMCPJsonRPC:
         }
         resp = await server.handle_mcp_request(req)
         assert "error" in resp
-        assert resp["error"]["code"] == -32602
+        assert resp["error"]["code"] == -32004
 
     @pytest.mark.asyncio
     async def test_unknown_tool(self, server):
@@ -383,14 +401,14 @@ class TestMCPJsonRPC:
         }
         resp = await server.handle_mcp_request(req)
         assert "error" in resp
-        assert resp["error"]["code"] == -32601
+        assert resp["error"]["code"] == -32004
 
     @pytest.mark.asyncio
     async def test_unknown_method(self, server):
         req = {"jsonrpc": "2.0", "id": 5, "method": "bogus/method", "params": {}}
         resp = await server.handle_mcp_request(req)
         assert "error" in resp
-        assert resp["error"]["code"] == -32601
+        assert resp["error"]["code"] == -32004
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -412,7 +430,8 @@ class TestMCPHTTPEndpoints:
     def test_root_get(self, client):
         r = client.get("/")
         assert r.status_code == 200
-        assert r.json()["protocol"] == "MCP over HTTP"
+        assert r.json()["status"] == "disabled"
+        assert "protocol" not in r.json()
 
     def test_root_head(self, client):
         r = client.head("/")
@@ -421,7 +440,7 @@ class TestMCPHTTPEndpoints:
     def test_health(self, client):
         r = client.get("/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "healthy"
+        assert r.json()["status"] == "disabled"
 
     def test_health_head(self, client):
         r = client.head("/health")
@@ -431,11 +450,11 @@ class TestMCPHTTPEndpoints:
         r = client.get("/mcp")
         assert r.status_code == 200
         data = r.json()
-        assert "methods" in data
+        assert data["methods"] == []
 
     def test_mcp_options(self, client):
         r = client.options("/mcp")
-        assert r.status_code == 200
+        assert r.status_code == 204
 
     def test_post_initialize(self, client):
         r = client.post(
@@ -444,8 +463,8 @@ class TestMCPHTTPEndpoints:
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["id"] == 1
-        assert "result" in data
+        assert data["id"] is None
+        assert data["error"]["code"] == -32004
 
     def test_post_tools_list(self, client):
         r = client.post(
@@ -453,8 +472,7 @@ class TestMCPHTTPEndpoints:
             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )
         assert r.status_code == 200
-        tools = r.json()["result"]["tools"]
-        assert tools[0]["name"] == "use_memory_agent"
+        assert r.json()["error"]["code"] == -32004
 
     def test_post_root_mirrors_mcp(self, client):
         """ChatGPT sends JSON-RPC to root — verify it works."""
@@ -462,7 +480,7 @@ class TestMCPHTTPEndpoints:
             "/", json={"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}}
         )
         assert r.status_code == 200
-        assert "result" in r.json()
+        assert r.json()["error"]["code"] == -32004
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -497,7 +515,7 @@ class TestSSEServerMessage:
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["result"]["protocolVersion"] == "2024-11-05"
+        assert data["error"]["code"] == -32004
 
     def test_message_tools_list(self, client):
         r = client.post(
@@ -505,8 +523,7 @@ class TestSSEServerMessage:
             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )
         assert r.status_code == 200
-        tools = r.json()["result"]["tools"]
-        assert tools[0]["name"] == "use_memory_agent"
+        assert r.json()["error"]["code"] == -32004
 
     def test_message_unknown_method(self, client):
         r = client.post(
@@ -523,7 +540,13 @@ class TestSSEServerMessage:
             json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
         )
         assert r.status_code == 200
-        assert "result" in r.json()
+        assert r.json()["error"]["code"] == -32004
+
+    def test_sse_stream_endpoint_is_retired(self, client):
+        r = client.get("/sse")
+
+        assert r.status_code == 410
+        assert r.json()["detail"]["code"] == -32004
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -549,7 +572,7 @@ class TestInsightToolValidation:
     async def test_list_open_tasks_rejects_invalid_bounds_before_db(self, monkeypatch):
         mock_db = AsyncMock()
         monkeypatch.setattr(srv._ctx, "db", mock_db)
-        result = await srv.list_open_tasks.fn(days=0, limit=20)
+        result = await srv.list_open_tasks.fn(days=0, limit=20, ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
         mock_db.get_recent_observations_by_age.assert_not_called()
@@ -558,7 +581,7 @@ class TestInsightToolValidation:
     async def test_suggest_followups_rejects_excessive_limit(self, monkeypatch):
         mock_db = AsyncMock()
         monkeypatch.setattr(srv._ctx, "db", mock_db)
-        result = await srv.suggest_followups.fn(days=14, limit=51)
+        result = await srv.suggest_followups.fn(days=14, limit=51, ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
         mock_db.get_recent_observations_by_age.assert_not_called()
@@ -567,7 +590,7 @@ class TestInsightToolValidation:
     async def test_list_day_summaries_rejects_excessive_days(self, monkeypatch):
         mock_db = AsyncMock()
         monkeypatch.setattr(srv._ctx, "db", mock_db)
-        result = await srv.list_day_summaries.fn(days=32)
+        result = await srv.list_day_summaries.fn(days=32, ctx=_stdio_context())
         data = json.loads(result)
         assert "error" in data
         mock_db.get_recent_observations_by_age.assert_not_called()
@@ -576,8 +599,7 @@ class TestInsightToolValidation:
 def test_auth_context_error_denies_when_http_transport(monkeypatch):
     monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "secret")
     monkeypatch.setenv("MCP_TRANSPORT", "http")
-    ctx = MagicMock()
-    ctx.get_http_request.side_effect = RuntimeError("missing context")
+    ctx = Context(srv.mcp)
 
     assert srv._auth_ok(ctx) is False
 
@@ -587,8 +609,8 @@ def test_rate_limit_bucket_is_shared_across_tools(monkeypatch):
     monkeypatch.setattr(srv, "SUPERMEM_API_KEY", "")
     monkeypatch.setattr(srv, "SUPERMEM_RATE_LIMIT", 1)
 
-    assert srv._guard_tool(None, "supermem_hybrid") is None
-    denial = srv._guard_tool(None, "get_observations")
+    assert srv._guard_tool(_stdio_context(), "supermem_hybrid") is None
+    denial = srv._guard_tool(_stdio_context(), "get_observations")
 
     assert denial is not None
     assert "rate_limit_error" in denial

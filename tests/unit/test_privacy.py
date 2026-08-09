@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from supermem.privacy.filter import PrivacyFilter
 
 
@@ -48,6 +46,18 @@ def test_strip_all_private_returns_empty() -> None:
     text = "<private>everything is private</private>"
     result = PrivacyFilter.strip(text)
     assert result == ""
+
+
+def test_strip_unclosed_private_fails_closed() -> None:
+    result = PrivacyFilter.strip("public <private>private canary")
+    assert result == "public"
+    assert "canary" not in result
+
+
+def test_strip_stray_closer_fails_closed() -> None:
+    result = PrivacyFilter.strip("public </private> private-canary")
+    assert result == "public"
+    assert "canary" not in result
 
 
 def test_has_private_true() -> None:

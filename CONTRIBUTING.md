@@ -11,7 +11,7 @@ supermem/
 ├── supermem/          ← Core library (supermem-core)
 │   ├── core/        ABCs: BaseRetriever, BaseStorage, BaseModelClient, BaseConnector
 │   ├── storage/     DatabaseManager (SQLite FTS5), KuzuGraphManager, ChromaManager
-│   ├── retrieval/   FTSRetriever, GraphRetriever, VectorRetriever, AgentRetriever, HybridRetriever
+│   ├── retrieval/   FTSRetriever, GraphRetriever, VectorRetriever, unavailable AgentRetriever sentinel, HybridRetriever
 │   ├── capture/     ObservationCapture, SessionManager, MemoryCompressor
 | `model/`       | OpenRouter, Ollama, Claude, LMStudio clients |
 │   ├── indexer/     VaultIndexer (watchdog live re-indexing)
@@ -19,7 +19,7 @@ supermem/
 │   ├── errors.py    Error hierarchy
 │   ├── config.py    All env-var config (single source of truth)
 │   └── logging.py   structlog JSON + correlation ID binding
-├── agent/           Agent conversation loop + sandboxed executor
+├── agent/           Disabled raw-vault Agent compatibility shell + restricted local executor (not a hostile-code sandbox)
 ├── mcp_server/      FastMCP server, 4 MCP tools, lifespan hooks
 ├── worker/          Optional FastAPI HTTP dashboard on :37777
 ├── memory_connectors/  5 import connectors (ChatGPT, Notion, Nuclino, GitHub, Google Docs)
@@ -28,18 +28,24 @@ supermem/
     └── integration/ Real temp vault → index → search
 ```
 
-### Four-Tier Retrieval
+### Boundary-Aware Retrieval
 
 ```
-HybridRetriever.search(query, tier_limit=4, min_results=3)
+HybridRetriever.search(query, tier_limit=3, min_results=3)
     │
     ├── FTSRetriever      tier=1  always available  wraps db.fts_search()
     ├── GraphRetriever    tier=2  requires kuzu     BFS from seed obs_ids → entity names → more obs_ids
     ├── VectorRetriever   tier=3  SUPERMEM_VECTOR=true  cosine similarity via ChromaDB
-    └── AgentRetriever    tier=4  always available  wraps agent.Agent.chat(), last resort
+    └── Tier 4 Agent navigation is unavailable pending a source-aware
+        lifecycle broker; requests above tier 3 are capped everywhere.
 ```
 
-**Short-circuit**: stops when `len(obs_ids) >= min_results`. Unavailable tiers are logged at WARNING and skipped — no exception is raised.
+**Short-circuit**: stops when `len(obs_ids) >= min_results`. The primary MCP
+HTTP transport is authenticated and loopback-only; protected Worker HTTP also
+fails closed. Primary MCP HTTP is deliberately stateless and does not issue MCP
+session IDs; Worker observation listing returns active rows only. All supported
+retrieval is capped at tier 3. `Agent.chat` fails closed and no supported memory
+path invokes the restricted executor.
 
 ### Cross-Layer Contract
 
@@ -47,7 +53,8 @@ HybridRetriever.search(query, tier_limit=4, min_results=3)
 
 - `retrieval/` imports from `storage/` only via type hints (`TYPE_CHECKING`) or through constructor injection
 - `capture/` does not import `retrieval/`; it writes directly to `storage/`
-- `model/` is imported only by `capture/` and `retrieval/agent.py`
+- `model/` is imported only by `capture/`; raw-vault Agent navigation must not
+  bypass the lifecycle-aware retrieval boundary
 - `mcp_server/` is the only layer that wires everything together
 
 Violating this creates circular import chains that are hard to debug.

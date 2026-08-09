@@ -12,12 +12,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local insight tools for open-task extraction, follow-up suggestions, and day summaries, exposed through MCP and the worker HTTP API.
 - Worker endpoints for protected-resource metadata, local insights, and observation retraction.
 - Security posture documentation covering current safeguards, limitations, and production hardening roadmap.
+- Bounded ZIP validation and streamed extraction for Notion and Nuclino imports, including pre-open central-directory limits.
+- Regression coverage for fail-closed MCP/Worker HTTP access, retired legacy transports, private vault reads, and ZIP import controls.
+- Local subprocess coverage for the shipped primary MCP entrypoint: stdio
+  initialize/tool listing/EOF cleanup and authenticated loopback HTTP startup,
+  stateless repeated initialization, and SIGTERM lifecycle cleanup.
 
 ### Changed
 - Hybrid retrieval now filters candidate IDs through lifecycle status before returning results.
 - MCP rate limiting is keyed by client identity across tools rather than per tool.
 - CI release jobs validate Docker/package builds on pull requests while pushing/publishing only on version tags.
 - The agent executor is documented and hardened as a restricted local executor rather than a hostile-code sandbox.
+- Primary MCP access now distinguishes trusted local stdio from authenticated loopback HTTP; HTTP is capped at retrieval Tier 3 and legacy HTTP/SSE adapters are disabled.
+- Ordinary restricted-executor reads redact private blocks, and `update_file` rejects private-bearing files without mutation.
+- Primary FastMCP transports now use the supported async lifespan and
+  `run_async()` entrypoint rather than nesting a synchronous server runner in
+  an event loop.
+- Primary MCP HTTP now uses a stateless local profile, so authenticated
+  initialize requests do not retain resumable protocol sessions. Worker
+  observation listing returns active rows only.
+- Retired HTTP/SSE adapters reject without parsing request bodies, and the
+  restricted executor denies direct platform raw-I/O module imports.
+- All supported retrieval paths are capped at Tier 3. Tier 4/raw-vault Agent
+  navigation now fails closed pending a source-aware lifecycle broker; no Agent
+  model reply or `agent_reply` observation is produced by this compatibility
+  path.
 
 ### Fixed
 - Archive restore rejects absolute and traversal paths before writing into the vault.

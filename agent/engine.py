@@ -1,5 +1,9 @@
 import builtins
+import _io
 import importlib
+import importlib._bootstrap_external as _bootstrap_external
+import inspect
+import io
 import logging
 import os
 import sys
@@ -7,8 +11,11 @@ import traceback
 import pickle
 import subprocess
 import base64
+from collections.abc import Collection
+from typing import Any
 
 from agent.settings import SANDBOX_TIMEOUT
+from supermem.privacy.filter import PrivacyFilter
 
 # Configure a logger for the restricted local executor.
 logger = logging.getLogger(__name__)
@@ -24,14 +31,24 @@ DEFAULT_BLACKLIST = [
     "subprocess.check_output",
 ]
 DENIED_IMPORT_ROOTS = {
+    "agent",
     "os",
+    "posix",
+    "nt",
     "sys",
     "socket",
     "subprocess",
     "http",
+    "importlib",
+    "_frozen_importlib",
+    "_frozen_importlib_external",
     "urllib",
     "requests",
+    "zipimport",
 }
+_IMPORTLIB_FILE_LOADER_CODES = frozenset(
+    {_bootstrap_external.FileLoader.get_data.__code__}
+)
 
 
 def _is_within_path(path: str, root: str) -> bool:
@@ -47,16 +64,20 @@ def _is_within_path(path: str, root: str) -> bool:
 def _run_user_code(
     code: str,
     allow_installs: bool,
-    allowed_path: str,
-    blacklist: list,
-    available_functions: dict,
+    allowed_path: str | None,
+    blacklist: list[str],
+    available_functions: dict[str, Any],
     log: bool = False,
-) -> tuple[dict, str]:
+) -> tuple[dict[str, Any] | None, str | None]:
     """
-    Execute code under sandboxed conditions (limited file access, optional installs,
-    and blacklisting) and return the resulting locals and an error message.
+    Execute code under restricted conditions and return locals and an error.
+
+    This is not hostile-code isolation. The explicit read boundary below prevents
+    ordinary model-produced file APIs from returning ``<private>`` blocks.
     """
     orig_open = builtins.open
+    orig_io_open = io.open
+    orig_raw_io_open = _io.open
     orig_import = builtins.__import__
     orig_remove = os.remove
     orig_rename = os.rename
@@ -69,6 +90,7 @@ def _run_user_code(
             except Exception:
                 pass
         builtins.open = orig_open
+        io.open = orig_io_open
         builtins.__import__ = orig_import
         os.remove = orig_remove
         os.rename = orig_rename
@@ -84,22 +106,128 @@ def _run_user_code(
                 logger.warning(
                     "Could not change working directory to %s: %s", allowed, e
                 )
-            # Wrap builtins.open to restrict file access
 
-            def secure_open(file, *args, **kwargs):
-                """Open that restricts file access to allowed_path."""
-                # If file is a file object or path-like, get its string path
-                path = (
-                    file if isinstance(file, str) else getattr(file, "name", str(file))
-                )
-                full_path = os.path.abspath(path if path is not None else "")
-                if not _is_within_path(full_path, allowed):
+            def _read_mode(args, kwargs) -> str:
+                return kwargs.get("mode", args[0] if args else "r")
+
+            def _reject_private_overwrite(full_path: str) -> None:
+                if not os.path.isfile(full_path):
+                    return
+                with orig_open(full_path, "rb") as existing:
+                    raw = existing.read()
+                text = raw.decode("utf-8", errors="surrogateescape")
+                if PrivacyFilter.has_private(text):
                     raise PermissionError(
-                        f"Access to '{full_path}' is denied by restricted executor."
+                        "Restricted executor cannot overwrite a file "
+                        "containing private blocks."
                     )
-                return orig_open(file, *args, **kwargs)
 
-            builtins.open = secure_open
+            def _called_by_real_import_loader() -> bool:
+                frame = inspect.currentframe()
+                for _ in range(3):
+                    if frame is None:
+                        return False
+                    frame = frame.f_back
+                    if (
+                        frame is not None
+                        and frame.f_code in _IMPORTLIB_FILE_LOADER_CODES
+                    ):
+                        return True
+                return False
+
+            def _restricted_open(original, *, permit_import_loader: bool = False):
+                def secure_open(file, *args, **kwargs):
+                    """Restrict paths, sanitize reads, and preserve private files."""
+                    if permit_import_loader and _called_by_real_import_loader():
+                        return original(file, *args, **kwargs)
+                    if isinstance(file, int):
+                        raise PermissionError(
+                            "Raw file descriptors are denied by restricted executor."
+                        )
+                    full_path = os.path.abspath(os.fspath(file))
+                    if not _is_within_path(full_path, allowed):
+                        raise PermissionError(
+                            f"Access to '{full_path}' is denied by restricted executor."
+                        )
+                    mode = _read_mode(args, kwargs)
+                    if "+" in mode:
+                        raise PermissionError(
+                            "Read/write file modes are denied by restricted executor."
+                        )
+                    if "r" not in mode:
+                        _reject_private_overwrite(full_path)
+                        return original(full_path, *args, **kwargs)
+                    with original(full_path, *args, **kwargs) as source:
+                        content = source.read()
+                    if isinstance(content, bytes):
+                        text = content.decode("utf-8", errors="surrogateescape")
+                        stream = io.BytesIO(
+                            PrivacyFilter.strip_preserving_public_bytes(text).encode(
+                                "utf-8", errors="surrogateescape"
+                            )
+                        )
+                        setattr(
+                            stream,
+                            "_supermem_private_redacted",
+                            PrivacyFilter.has_private(text),
+                        )
+                        return stream
+                    stream = io.StringIO(
+                        PrivacyFilter.strip_preserving_public_bytes(content)
+                    )
+                    setattr(
+                        stream,
+                        "_supermem_private_redacted",
+                        PrivacyFilter.has_private(content),
+                    )
+                    return stream
+
+                return secure_open
+
+            # ``pathlib.Path.read_text/read_bytes`` route through ``io.open``;
+            # patch both ordinary public entry points rather than claiming this
+            # restricted executor is a general hostile-code sandbox.
+            builtins.open = _restricted_open(orig_open)
+            original_attrs.append((io, "open", orig_io_open))
+            io.open = _restricted_open(orig_io_open)
+            original_attrs.append((_io, "open", orig_raw_io_open))
+            _io.open = _restricted_open(orig_raw_io_open, permit_import_loader=True)
+
+            def _deny_raw_io_backend(name: str):
+                def denied(*args, **kwargs):
+                    raise PermissionError(
+                        f"Raw {name} is denied by restricted executor."
+                    )
+
+                return denied
+
+            def _restricted_open_code(original):
+                def secure_open_code(file, *args, **kwargs):
+                    if _called_by_real_import_loader():
+                        return original(file, *args, **kwargs)
+                    raise PermissionError(
+                        "Raw open_code is denied by restricted executor."
+                    )
+
+                return secure_open_code
+
+            # ``io.FileIO`` and ``io.open_code`` bypass the ordinary ``open``
+            # family above. Deny raw byte backends instead of pretending this
+            # model-code executor can safely mediate their bytes. The private
+            # backend uses exact frozen-loader code objects (not filenames) for
+            # its narrowly required import path; ordinary executor calls remain
+            # denied or redacted.
+            for module, attribute in ((io, "FileIO"), (_io, "FileIO")):
+                if hasattr(module, attribute):
+                    original_attrs.append(
+                        (module, attribute, getattr(module, attribute))
+                    )
+                    setattr(module, attribute, _deny_raw_io_backend(attribute))
+            for module in (io, _io):
+                if hasattr(module, "open_code"):
+                    original = getattr(module, "open_code")
+                    original_attrs.append((module, "open_code", original))
+                    setattr(module, "open_code", _restricted_open_code(original))
 
             # Optionally, restrict other file-related functions (remove, rename, etc.) similarly
             # We'll patch a couple of common ones as an example:
@@ -113,19 +241,6 @@ def _run_user_code(
                 return orig_remove(path, *args, **kwargs)
 
             os.remove = secure_remove
-
-            def secure_rename(src, dst, *args, **kwargs):
-                full_src = os.path.abspath(src)
-                full_dst = os.path.abspath(dst)
-                if not _is_within_path(full_src, allowed) or not _is_within_path(
-                    full_dst, allowed
-                ):
-                    raise PermissionError(
-                        "Rename operation outside allowed path is denied by restricted executor."
-                    )
-                return orig_rename(src, dst, *args, **kwargs)
-
-            os.rename = secure_rename
 
             def _contained_path(path) -> str:
                 full_path = os.path.abspath(os.fspath(path))
@@ -153,15 +268,36 @@ def _run_user_code(
                         raise PermissionError(
                             "dir_fd based os.open is denied by restricted executor."
                         )
-                    return original(_contained_path(path), flags, mode)
+                    if flags & os.O_ACCMODE != os.O_WRONLY:
+                        raise PermissionError(
+                            "Raw descriptor reads are denied by restricted executor."
+                        )
+                    full_path = _contained_path(path)
+                    _reject_private_overwrite(full_path)
+                    return original(full_path, flags, mode)
 
                 return wrapped
 
             def _rename_like_wrapper(original):
                 def wrapped(src, dst, *args, **kwargs):
-                    return original(
-                        _contained_path(src), _contained_path(dst), *args, **kwargs
-                    )
+                    if any(
+                        name.endswith("dir_fd") and value is not None
+                        for name, value in kwargs.items()
+                    ):
+                        raise PermissionError(
+                            "dir_fd based rename/link operations are denied by "
+                            "restricted executor."
+                        )
+                    source_path = _contained_path(src)
+                    destination_path = _contained_path(dst)
+                    if os.path.isdir(source_path) or os.path.isdir(destination_path):
+                        raise PermissionError(
+                            "Directory rename/link operations are denied by "
+                            "restricted executor."
+                        )
+                    _reject_private_overwrite(source_path)
+                    _reject_private_overwrite(destination_path)
+                    return original(source_path, destination_path, *args, **kwargs)
 
                 return wrapped
 
@@ -190,7 +326,7 @@ def _run_user_code(
                 "removedirs",
             ):
                 _patch_os_path_function(function_name, _single_path_wrapper)
-            for function_name in ("replace", "link", "symlink"):
+            for function_name in ("rename", "replace", "link", "symlink"):
                 _patch_os_path_function(function_name, _rename_like_wrapper)
             _patch_os_path_function("walk", _walk_wrapper)
 
@@ -264,9 +400,9 @@ def _run_user_code(
         if available_functions:
             exec_globals.update(available_functions)
 
-        exec_locals = {}  # local variables will be collected here
+        exec_locals: dict[str, Any] = {}  # local variables will be collected here
 
-        error_msg = None
+        error_msg: str | None = None
         try:
             exec(code, exec_globals, exec_locals)  # Execute the user's code
         except Exception as e:
@@ -290,7 +426,7 @@ def _run_user_code(
         exec_locals.pop("__builtins__", None)
 
         # Collect only picklable locals for returning
-        safe_locals = {}
+        safe_locals: dict[str, Any] = {}
         for var, val in exec_locals.items():
             try:
                 pickle.dumps(val)  # test picklability
@@ -319,15 +455,16 @@ def execute_sandboxed_code(
     code: str,
     timeout: int = SANDBOX_TIMEOUT,
     allow_installs: bool = False,
-    requirements_path: str = None,
-    allowed_path: str = None,
-    blacklist: list = None,
-    available_functions: dict = None,
-    import_module: str = None,
+    requirements_path: str | None = None,
+    allowed_path: str | None = None,
+    blacklist: list[str] | None = None,
+    available_functions: dict[str, Any] | str | None = None,
+    import_module: str | None = None,
+    tool_allowlist: Collection[str] | None = None,
     log: bool = False,
-) -> tuple[dict, str]:
+) -> tuple[dict[str, Any] | None, str | None]:
     """
-    Execute the given Python code string in a sandboxed subprocess with specified restrictions.
+    Execute model-produced Python in a restricted subprocess.
 
     Parameters:
         code (str): The Python code to execute.
@@ -340,7 +477,11 @@ def execute_sandboxed_code(
                           If the code uses any of these, it will be prevented or result in an error.
         available_functions (dict): Dictionary of functions to make available in the sandboxed environment.
                                    The keys are the function names, and the values are the function objects.
-        import_module (str): Name of a Python module to import and make all its functions available in the sandbox.
+        import_module (str): Name of a Python module whose explicitly allowlisted
+                             functions should be made available in the sandbox.
+        tool_allowlist (Collection[str]): Callable names permitted from
+                             ``import_module``. Omitting it fails closed rather
+                             than exporting every public callable.
 
     Returns:
         (dict, str): A tuple containing the dictionary of local variables from the executed code (or None on failure),
@@ -369,21 +510,31 @@ def execute_sandboxed_code(
             logger.error("Requirements file %s not found.", requirements_path)
             return None, f"Requirements file not found: {requirements_path}"
 
-    # If a module name is provided, import it and add its functions to available_functions
+    # If a module name is provided, import only explicitly allowlisted callables.
     if isinstance(available_functions, str) and not import_module:
         import_module = available_functions
         available_functions = None
 
     if import_module:
+        if tool_allowlist is None:
+            return (
+                None,
+                "An explicit tool_allowlist is required when importing executor tools.",
+            )
         try:
             module = importlib.import_module(import_module)
-            if available_functions is None:
+            if not isinstance(available_functions, dict):
                 available_functions = {}
-            for name in dir(module):
-                if not name.startswith("_"):
-                    attr = getattr(module, name)
-                    if callable(attr):
-                        available_functions[name] = attr
+            for name in sorted(set(tool_allowlist)):
+                if name.startswith("_"):
+                    return None, f"Tool '{name}' is not eligible for executor export."
+                attr = getattr(module, name, None)
+                if not callable(attr):
+                    return (
+                        None,
+                        f"Allowlisted tool '{name}' is not a callable in {import_module}.",
+                    )
+                available_functions[name] = attr
         except ImportError as e:
             logger.error(f"Failed to import module {import_module}: {e}")
             return None, f"Failed to import module {import_module}: {e}"

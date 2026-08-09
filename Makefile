@@ -28,7 +28,7 @@ help:
 	@echo "    run-agent         Start local model server (MLX or vLLM)"
 	@echo "    generate-mcp-json Generate mcp.json for Claude Desktop / LM Studio"
 	@echo "    serve-mcp         Start MCP server (stdio)"
-	@echo "    serve-mcp-http    Start MCP server (HTTP, for ChatGPT)"
+	@echo "    serve-mcp-http    Start loopback MCP HTTP (API key required)"
 	@echo "    chat-cli          Interactive terminal chat"
 	@echo "    memory-wizard     Import memory from ChatGPT, Notion, GitHub, etc."
 	@echo "    connect-memory    Direct connector CLI"
@@ -216,29 +216,12 @@ convert-chatgpt:
 	echo "Running: $$cmd"; \
 	$$cmd
 
-# HTTP Server for ChatGPT Integration
+# Retired legacy HTTP wrapper
 serve-http:
-	@echo "🌐 Starting HTTP server for ChatGPT integration..."
-	@echo "💡 This creates an HTTP wrapper around the existing stdio MCP server"
-	@echo "🔗 Server will be available at: http://localhost:8080"
-	@echo ""
-	@echo "📋 Next steps:"
-	@echo "   1. Make sure your memory server is properly configured (make setup)"
-	@echo "   2. In another terminal, run: ngrok http 8080"
-	@echo "   3. Use the ngrok URL in ChatGPT Developer Mode"
-	@echo ""
-	uv run python mcp_server/http_server.py
+	@echo "ERROR: serve-http used a retired unauthenticated compatibility wrapper."
+	@echo "Use 'make serve-mcp-http' for the primary loopback HTTP transport."
+	@false
 
-# MCP-Compliant HTTP Server for ChatGPT
+# Primary loopback MCP HTTP server. Remote production remains unsupported.
 serve-mcp-http:
-	@echo "🌐 Starting MCP-compliant HTTP server for ChatGPT..."
-	@echo "📋 This implements proper Model Context Protocol over HTTP"
-	@echo "🔗 Server will be available at: http://localhost:8081"
-	@echo "🔗 MCP endpoint: http://localhost:8081/mcp"
-	@echo ""
-	@echo "📋 Next steps:"
-	@echo "   1. In another terminal, run: ngrok http 8081"
-	@echo "   2. In ChatGPT, use: https://your-ngrok-url.ngrok.io/mcp"
-	@echo "   3. Set protocol to 'HTTP' (not SSE)"
-	@echo ""
-	uv run python mcp_server/mcp_http_server.py
+	FASTMCP_LOG_LEVEL=INFO MCP_TRANSPORT=http MCP_HOST=127.0.0.1 uv run python -m mcp_server.server

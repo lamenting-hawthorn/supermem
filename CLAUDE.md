@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-supermem — persistent AI memory without RAG. An MCP server that lets AI assistants (Claude Desktop, ChatGPT, LM Studio) navigate a local markdown knowledge base using a fine-tuned agent model, not vector search. The agent reads/writes memory files via sandboxed Python execution with Obsidian-style `[[wikilinks]]` for multi-hop reasoning.
+supermem — persistent AI memory without RAG. The supported MCP memory surface
+uses lifecycle-aware SQLite FTS, graph, and optional vector retrieval (tiers
+1–3). Raw-vault Agent navigation (Tier 4) is disabled pending a source-aware
+lifecycle broker, so direct `Agent.chat` fails closed before model, tool, or
+executor use. The retained restricted executor is not a hostile-code sandbox
+and is not a supported MCP memory path.
 
 ## Build & Run Commands
 
@@ -23,7 +28,7 @@ make setup                # choose memory directory (GUI)
 make chat-cli             # interactive terminal REPL
 make run-agent            # start local model server (MLX on macOS, vLLM on Linux)
 make serve-mcp            # MCP server (stdio, for Claude Desktop)
-make serve-mcp-http       # MCP server (HTTP, for ChatGPT)
+make serve-mcp-http       # Loopback MCP HTTP; SUPERMEM_API_KEY required
 make generate-mcp-json    # generate mcp.json config for Claude Desktop
 
 # Quick start
@@ -57,8 +62,8 @@ uv workspace monorepo with four packages:
 
 | Package | Path | Purpose |
 |---------|------|---------|
-| `agent` | `agent/` | Core agent logic — conversation loop, sandboxed execution, file tools, LLM clients |
-| `mcp-server` | `mcp_server/` | FastMCP wrapper exposing agent as MCP tool, stdio + HTTP transports |
+| `agent` | `agent/` | Disabled raw-vault Agent compatibility shell and restricted local executor |
+| `mcp-server` | `mcp_server/` | FastMCP wrapper exposing lifecycle-aware memory tools over stdio + HTTP |
 | `supermem-core` | `supermem/` | v2 layer — hybrid retrieval, graph/vector/SQLite storage, session tracking, Worker HTTP API |
 | `memory_connectors` | `memory_connectors/` | Plugin system for importing data (ChatGPT, Notion, Nuclino, GitHub, Google Docs) |
 
@@ -66,26 +71,23 @@ uv workspace monorepo with four packages:
 
 ```
 AI Client (Claude Desktop / ChatGPT)
-  │ MCP (stdio or HTTP)
+  │
+  ├─ trusted local stdio ── HybridRetriever tiers 1-3
+  └─ authenticated HTTP ─── HybridRetriever tiers 1-3
   ▼
-mcp_server/server.py — FastMCP, exposes "use_memory_agent" tool
+mcp_server/server.py — FastMCP, exposes lifecycle-aware retrieval tools
   │
   ▼
-agent/agent.py — conversation loop, up to 20 tool turns
-  │
-  ├── agent/model.py — OpenAI SDK client (OpenRouter, vLLM, or LM Studio)
-  ├── agent/engine.py — subprocess sandbox (path-restricted, builtins blacklisted, 20s timeout)
-  └── agent/tools.py — file/dir operations on memory vault
-        │
-        ▼
-  Memory Vault (local markdown files with [[wikilinks]])
-        │
-        ▼ (v2 indexing — when Worker is running)
-  supermem/ — HybridRetriever (FTS5 → graph → vector → agent, 4 tiers)
+supermem/ — HybridRetriever (FTS5 → graph → vector, 3 tiers)
   ├── supermem/storage/database.py  — SQLite via aiosqlite
   ├── supermem/storage/graph.py     — Kuzu graph DB
   ├── supermem/storage/vector.py    — Chroma vector store
   └── supermem/indexer/vault.py     — walks vault, populates stores
+
+Tier 4 raw-vault Agent navigation is unavailable until it can enforce source
+lifecycle policy. `agent/agent.py`, `agent/tools.py`, and `agent/engine.py`
+remain compatibility/internal surfaces; no supported MCP or Worker path invokes
+them for memory retrieval.
 ```
 
 ### supermem CLI (entry point)
@@ -110,31 +112,41 @@ Optional service started via `supermem serve --worker`. Provides:
 |----------|---------|
 | `GET /health` | Liveness + DB/graph/vector readiness |
 | `GET /sessions` | Recent sessions with summaries |
-| `GET /observations` | Paginated observations, filterable by type |
-| `POST /search` | Hybrid search (FTS5 → graph → vector → agent) |
+| `GET /observations` | Active observations only, filterable by type/session |
+| `POST /search` | Hybrid search (FTS5 → graph → vector; all requests cap at Tier 3) |
 | `POST /index/rebuild` | Re-index entire vault |
 | `GET /backup` | Stream tar.gz backup |
 | `GET /stats` | Memory metrics |
 | `GET /` | Static session viewer UI (`worker/static/index.html`) |
 
-Auth: `Authorization: Bearer <SUPERMEM_API_KEY>` header; disabled when env var unset.
+Auth: protected endpoints require `Authorization: Bearer <SUPERMEM_API_KEY>`;
+they fail closed when the key is unset. All supported retrieval is capped at
+Tier 3. Primary MCP HTTP is a separate authenticated loopback-only, stateless
+profile: it does not issue or resume MCP transport session IDs.
+The local dashboard accepts the key through its password field, holds it only
+in page memory, and clears it on refresh; it never stores the key in a URL,
+`localStorage`, or `sessionStorage`.
 
 ### Key Design Decisions
 
-- **XML response format**: Agent responses use strict `<think>`, `<python>`, `<reply>` tags — parsed in `agent/utils.py`
-- **Sandbox isolation**: Code runs in a subprocess with `builtins.open`, `os.remove`, `os.rename` patched to restrict to memory path; dangerous builtins (exec, eval, `__import__`) are blacklisted
+- **Agent boundary**: raw-vault Agent navigation is disabled until a
+  source-aware lifecycle broker exists. Do not re-enable it for stdio, HTTP, or
+  Worker paths without that broker and fresh security review.
+- **Restricted executor**: a retained internal utility with an explicit tool
+  allowlist and denied platform raw-I/O imports; it is not hostile-code
+  isolation and is not reachable from the supported memory surface.
 - **Size limits**: 1MB per file, 10MB per directory, 100MB total memory — enforced in `agent/tools.py`
-- **Agent settings**: `agent/settings.py` — MAX_TOOL_TURNS=20, sandbox timeout=20s, LLM backend URLs
+- **Agent settings**: `agent/settings.py` — MAX_TOOL_TURNS=20, executor timeout=20s, LLM backend URLs
 - **System prompt**: `agent/system_prompt.txt` — behavioral spec, available APIs, file naming conventions
 
 ### Key Files
 
 | File | Role |
 |------|------|
-| `agent/agent.py` | Agent class — conversation management, tool-turn loop |
-| `agent/engine.py` | Sandboxed subprocess executor |
-| `agent/tools.py` | Memory file/dir CRUD operations |
-| `agent/model.py` | LLM client factory (OpenRouter, vLLM) |
+| `agent/agent.py` | Tier-4 compatibility shell; `chat` fails closed |
+| `agent/engine.py` | Restricted subprocess executor (not hostile-code isolation) |
+| `agent/tools.py` | Raw-vault content and metadata routes denied pending lifecycle broker |
+| `agent/model.py` | Legacy LLM client factory; not invoked by disabled Agent navigation |
 | `agent/schemas.py` | Pydantic models (ChatMessage, AgentResponse, etc.) |
 | `agent/settings.py` | All constants and backend config |
 | `agent/system_prompt.txt` | Agent behavioral instructions |
@@ -145,7 +157,7 @@ Auth: `Authorization: Bearer <SUPERMEM_API_KEY>` header; disabled when env var u
 ## Environment
 
 - **Python**: 3.11 (exact, enforced in pyproject.toml)
-- **Config files**: `.memory_path` (memory dir), `.mlx_model_name` (model), `.filters` (privacy rules)
+- **Config files**: `.memory_path` (memory dir), `.mlx_model_name` (model), `.filters` (legacy Agent prompt guidance; never embedded in lifecycle-aware FTS queries)
 - **Env vars**: see `.env.example` — OPENROUTER_API_KEY, VLLM_HOST/PORT, LOG_LEVEL, MCP_TRANSPORT; v2 adds SUPERMEM_VAULT_PATH, SUPERMEM_DB_PATH, SUPERMEM_WORKER_PORT (default 37777), SUPERMEM_API_KEY
 - **Remotes**: `origin` = fork (`lamenting-hawthorn/supermem`), `upstream` = `firstbatchxyz/mem-agent-mcp`
 - **Docker**: `docker-compose.yml` + `Dockerfile` available for containerized deployment

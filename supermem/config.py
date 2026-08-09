@@ -106,4 +106,8 @@ SUPERMEM_WORKER_HOST: str = os.getenv("SUPERMEM_WORKER_HOST", "127.0.0.1")
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 
 SUPERMEM_MIN_RESULTS: int = int(os.getenv("SUPERMEM_MIN_RESULTS", "3"))
-SUPERMEM_DEFAULT_TIER_LIMIT: int = int(os.getenv("SUPERMEM_DEFAULT_TIER_LIMIT", "4"))
+SUPERMEM_MAX_RETRIEVAL_TIER: int = 3
+SUPERMEM_DEFAULT_TIER_LIMIT: int = min(
+    int(os.getenv("SUPERMEM_DEFAULT_TIER_LIMIT", "3")),
+    SUPERMEM_MAX_RETRIEVAL_TIER,
+)

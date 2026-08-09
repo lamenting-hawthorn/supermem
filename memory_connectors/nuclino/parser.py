@@ -2,19 +2,18 @@
 Nuclino workspace export parser.
 """
 
-import os
 import re
-import zipfile
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
+
+from memory_connectors.archive import open_bounded_zip, safe_extract_zip
 
 from .types import (
     NuclinoWorkspace,
     NuclinoItem,
     NuclinoCluster,
     NuclinoAttachment,
-    NuclinoUser,
     ParsedNuclinoData,
 )
 
@@ -36,22 +35,22 @@ class NuclinoParser:
         Returns:
             ParsedNuclinoData containing workspace structure
         """
-        export_path = Path(export_path)
+        path = Path(export_path)
 
-        if export_path.is_file() and export_path.suffix == ".zip":
-            return self._parse_zip_export(export_path)
-        elif export_path.is_dir():
-            return self._parse_directory_export(export_path)
+        if path.is_file() and path.suffix == ".zip":
+            return self._parse_zip_export(path)
+        elif path.is_dir():
+            return self._parse_directory_export(path)
         else:
-            raise ValueError(f"Unsupported export format: {export_path}")
+            raise ValueError(f"Unsupported export format: {path}")
 
     def _parse_zip_export(self, zip_path: Path) -> ParsedNuclinoData:
         """Parse ZIP export file."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(temp_dir)
+            with open_bounded_zip(zip_path) as zip_ref:
+                safe_extract_zip(zip_ref, temp_dir)
 
             temp_path = Path(temp_dir)
 
@@ -189,7 +188,7 @@ class NuclinoParser:
         """Discover and parse all markdown items."""
         items = []
 
-        print(f"📄 Discovering Nuclino items...")
+        print("📄 Discovering Nuclino items...")
 
         # Find all markdown files
         markdown_files = list(export_dir.rglob("*.md"))
@@ -380,7 +379,7 @@ class NuclinoParser:
         self, items: List[NuclinoItem]
     ) -> Dict[str, List[NuclinoItem]]:
         """Organize items by topics for mem-agent."""
-        topics = {}
+        topics: Dict[str, List[NuclinoItem]] = {}
 
         # Topic keywords for categorization
         topic_keywords = {

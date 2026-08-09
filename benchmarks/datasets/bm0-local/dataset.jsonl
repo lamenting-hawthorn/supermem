@@ -1,0 +1,12 @@
+{"id":"BM0-01","scenario":"exact_positive","query":"saffron-aurora"}
+{"id":"BM0-02","scenario":"unknown","query":"unknown-zircon-omega"}
+{"id":"BM0-03","scenario":"source_modified","query":"release-orchid"}
+{"id":"BM0-04","scenario":"source_deleted","query":"deleted-ember"}
+{"id":"BM0-05","scenario":"retracted","query":"retracted-cedar"}
+{"id":"BM0-06","scenario":"expired","query":"expiring-lilac"}
+{"id":"BM0-07","scenario":"effective_interval","query":"interval-garnet"}
+{"id":"BM0-08","scenario":"nested_private","query":"public-slate"}
+{"id":"BM0-09","scenario":"compression","query":"compression-amber"}
+{"id":"BM0-10","scenario":"citation","query":"citation-ivory"}
+{"id":"BM0-11","scenario":"replay","query":"replay-onyx"}
+{"id":"BM0-12","scenario":"injection_data_only","query":"injection-marigold"}

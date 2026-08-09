@@ -14,6 +14,7 @@ from supermem.config import SUPERMEM_DB_PATH, SUPERMEM_OBS_TTL_DAYS
 from supermem.core.storage import BaseStorage
 from supermem.errors import StorageError
 from supermem.logging import get_logger
+from supermem.privacy import PrivacyFilter
 
 log = get_logger(__name__)
 
@@ -260,6 +261,11 @@ class DatabaseManager(BaseStorage):
         sensitivity: str = "normal",
         status: str = "active",
     ) -> int:
+        content = PrivacyFilter.strip(content)
+        if not content:
+            raise StorageError(
+                "Refusing to persist empty or entirely private observation"
+            )
         conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         confidence = max(0.0, min(confidence, 1.0))
@@ -500,6 +506,9 @@ class DatabaseManager(BaseStorage):
         content: str,
         obs_ids_compressed: list[int],
     ) -> int:
+        content = PrivacyFilter.strip(content)
+        if not content:
+            raise StorageError("Refusing to persist empty or entirely private summary")
         conn = await self._ensure_init()
         try:
             async with conn.execute(

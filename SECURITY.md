@@ -16,13 +16,31 @@ unless additional production controls are added.
 - **Retraction:** retracted observations are removed from FTS, filtered from
   retrieval/timelines/recent-session context, and derived summaries for the
   source session are invalidated. Retraction reasons are stored outside FTS.
+- **Lifecycle-aware retrieval boundary:** every supported MCP and Worker
+  retrieval request is capped at tiers 1–3 (FTS, graph, vector), whose results
+  are filtered through observation lifecycle state.
+- **Raw Agent boundary:** Tier 4 Agent vault navigation, raw content reads, and
+  raw metadata probes are unavailable pending a source-aware lifecycle broker.
+  `Agent.chat` fails closed before it can invoke a model, tool, or executor.
 - **Restore containment:** archive restore validates paths before writing into
   the vault and rejects absolute or traversal paths.
+- **Connector archive bounds:** Notion/Nuclino imports retain the 1 MiB parsed
+  Markdown/CSV ceiling while allowing attachments only within the 100 MiB
+  per-member and total-extraction ceilings; count, type, path, ratio, and
+  central-directory checks remain fail closed.
 - **MCP auth/rate guard:** primary MCP tools share the same auth guard and one
   per-client rate bucket.
-- **Restricted executor hardening:** generated Python runs in a subprocess with
-  a scrubbed environment, denied import roots, path-aware `open()` checks, and
-  wrappers for common lower-level `os` filesystem APIs.
+- **Bounded local HTTP profile:** primary MCP HTTP binds only to loopback,
+  authenticates before protocol handling, and is stateless, so initialize
+  requests do not create retained MCP transport sessions. Worker observation
+  listing and session observation counts return active rows only.
+- **Retired transport boundary:** legacy HTTP/SSE adapters return their disabled
+  response without reading or parsing request bodies.
+- **Restricted executor hardening:** the retained internal utility uses an
+  explicit tool allowlist, scrubbed environment, denied import roots,
+  path-aware `open()` checks, wrappers for common lower-level `os` filesystem
+  APIs, and denies direct `posix`/`nt` raw-I/O imports. It is not a supported
+  MCP or Worker memory path.
 
 ## Important limitations
 
@@ -41,20 +59,34 @@ HTTP mode currently supports static `SUPERMEM_API_KEY` Bearer authentication. It
 publishes protected-resource metadata for discovery, but it does **not** yet
 validate OAuth issuers, JWKS, audiences, or scopes. Do not expose HTTP mode as a
 multi-tenant internet service without an external auth gateway or future OAuth
-support.
+support. The supported local HTTP profile is deliberately stateless; it does not
+support resumable MCP transport sessions or long-lived session state.
+The local Worker dashboard accepts the static bearer through a password field
+and keeps it only in page memory. Imported memory content is escaped before UI
+rendering so it cannot become an HTML credential-reading path. This remains a
+local single-user convenience boundary, not a remote identity system.
+
+Tier 4/raw-vault Agent navigation is intentionally unavailable, including for
+trusted local stdio, because legacy vault files cannot reliably map to active,
+retracted, or deleted observations. Do not treat the retained Agent or executor
+code as a supported local-memory fallback. Re-enabling it requires a
+source-to-observation lifecycle broker, regression proof for retraction and
+deletion, and fresh security review.
 
 ## Recommended production roadmap
 
-1. Replace or wrap the restricted executor with container/OS isolation for
+1. Build a source-aware lifecycle broker before any Tier 4/raw-vault Agent
+   memory navigation is re-enabled.
+2. Replace or wrap the restricted executor with container/OS isolation for
    untrusted remote use.
-2. Add full OAuth 2.1/PKCE support for remote MCP transports, including issuer,
+3. Add full OAuth 2.1/PKCE support for remote MCP transports, including issuer,
    JWKS, audience, and scope validation.
-3. Expand lifecycle workflows with explicit supersede/forget APIs, deletion
+4. Expand lifecycle workflows with explicit supersede/forget APIs, deletion
    verification, and retention-policy reporting.
-4. Add encrypted backup support and documented restore verification.
-5. Add OpenTelemetry spans for MCP tool calls, retrieval tiers, model calls,
+5. Add encrypted backup support and documented restore verification.
+6. Add OpenTelemetry spans for MCP tool calls, retrieval tiers, model calls,
    compression, memory writes, retractions, and failures.
-6. Build a reproducible memory-quality benchmark suite covering temporal
+7. Build a reproducible memory-quality benchmark suite covering temporal
    updates, contradictory facts, retractions, abstention, prompt injection, and
    citation accuracy.
 supermem is local-first memory software. The default deployment target is a
@@ -72,13 +104,15 @@ controls before being exposed to untrusted networks.
 - **Archive restore safety:** backup restore must validate archive member paths
   before writing into the vault. Restore now rejects absolute paths and `..`
   traversal that would escape the configured vault.
-- **Executor boundary:** the current Python executor is a restricted local
-  subprocess, not a hostile-code sandbox. It now scrubs inherited environment
-  variables, blocks common process/network imports by default, and uses
-  path-aware containment checks, but production deployments should still run any
-  agent code execution inside an OS/container boundary with a scrubbed
+- **Executor boundary:** the current Python executor is a restricted internal
+  utility, not a hostile-code sandbox. It is not reachable from a supported
+  memory-retrieval route. Production deployments should still run any future
+  untrusted code execution inside an OS/container boundary with a scrubbed
   environment, no network by default, a read-only filesystem, and CPU/memory
   limits.
+- **Agent lifecycle boundary:** Tier 4/raw-vault Agent navigation is disabled
+  until a source-to-observation broker can enforce active/retracted/deleted
+  state. All supported retrieval is capped at Tier 3.
 - **Memory lifecycle:** observations now have provenance/lifecycle columns such
   as source, observed/valid time, confidence, trust level, sensitivity, and
   status. Follow-up work should migrate retrieval and UI surfaces toward these
@@ -89,12 +123,14 @@ controls before being exposed to untrusted networks.
 
 ## Recommended implementation phases
 
-1. Replace or disable the restricted Python executor for untrusted remote use.
-2. Add RFC 9728 protected-resource metadata and OAuth 2.1/PKCE integration for
+1. Build the source-aware lifecycle broker before re-enabling Tier 4/Agent
+   memory navigation.
+2. Replace or disable the restricted Python executor for untrusted remote use.
+3. Add RFC 9728 protected-resource metadata and OAuth 2.1/PKCE integration for
    remote MCP transports.
-3. Build explicit forget/retract/supersede workflows around memory status and
+4. Build explicit forget/retract/supersede workflows around memory status and
    validity intervals.
-4. Add retrieval evaluation fixtures covering temporal updates, contradictions,
+5. Add retrieval evaluation fixtures covering temporal updates, contradictions,
    retractions, abstention, and prompt-injection documents.
-5. Add OpenTelemetry spans for MCP tool execution, retrieval tiers, model calls,
+6. Add OpenTelemetry spans for MCP tool execution, retrieval tiers, model calls,
    compression, and memory writes.

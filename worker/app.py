@@ -9,7 +9,7 @@ Endpoints:
   GET  /health        liveness + readiness
   GET  /.well-known/oauth-protected-resource  RFC 9728 metadata stub
   GET  /sessions      recent sessions with summaries (paginated)
-  GET  /observations  paginated observations, filterable
+  GET  /observations  paginated active observations, filterable
   POST /search        FTS5 + graph + vector hybrid search
   POST /index/rebuild re-index entire vault
   GET  /backup        stream tar.gz of vault + SQLite snapshot
@@ -19,32 +19,28 @@ Endpoints:
   GET  /day-summaries local daily summaries
   POST /observations/{id}/retract mark an observation retracted
 
-Auth: Bearer token from SUPERMEM_API_KEY header. Disabled when env var unset.
+Auth: Bearer token from SUPERMEM_API_KEY header. The authenticated search
+surface fails closed when the key is unset and never invokes retrieval Tier 4.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
-import json
-import os
 import tarfile
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from supermem.capture.observation import ObservationCapture
-from supermem.capture.session import SessionManager
 from supermem.config import (
     SUPERMEM_API_KEY,
     SUPERMEM_DB_PATH,
     SUPERMEM_DEFAULT_TIER_LIMIT,
+    SUPERMEM_MAX_RETRIEVAL_TIER,
     SUPERMEM_VAULT_PATH,
     SUPERMEM_WORKER_HOST,
     SUPERMEM_WORKER_PORT,
@@ -97,7 +93,10 @@ async def _shutdown() -> None:
 
 async def _require_auth(request: Request) -> None:
     if not SUPERMEM_API_KEY:
-        return  # auth disabled in personal mode
+        raise HTTPException(
+            status_code=401,
+            detail="Worker HTTP API requires SUPERMEM_API_KEY",
+        )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or auth[7:] != SUPERMEM_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
@@ -116,7 +115,7 @@ async def index() -> HTMLResponse:
 
 @app.get("/.well-known/oauth-protected-resource")
 async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
-    """Return RFC 9728-style protected resource metadata for remote MCP clients."""
+    """Return protected-resource metadata without claiming OAuth validation."""
     resource = str(request.base_url).rstrip("/")
     payload: dict[str, Any] = {
         "resource": resource,
@@ -160,7 +159,9 @@ async def list_sessions(
         for row in rows:
             sid = row[0]
             async with _db._conn.execute(  # type: ignore[union-attr]
-                "SELECT COUNT(*) FROM observations WHERE session_id = ?", (sid,)
+                "SELECT COUNT(*) FROM observations "
+                "WHERE session_id = ? AND status = 'active'",
+                (sid,),
             ) as cur2:
                 obs_count = (await cur2.fetchone())[0]
             sessions.append(
@@ -188,7 +189,7 @@ async def list_observations(
     if not _db:
         raise HTTPException(503, "Database not available")
     try:
-        where_clauses = []
+        where_clauses = ["status = 'active'"]
         params: list[Any] = []
         if session_id is not None:
             where_clauses.append("session_id = ?")
@@ -222,7 +223,9 @@ async def search(
     if not _retriever:
         raise HTTPException(503, "Retriever not available")
     try:
-        result = await _retriever.search(body.query, tier_limit=body.tier_limit)
+        # The source-aware retrieval product profile stops at Tier 3.
+        tier_limit = min(body.tier_limit, SUPERMEM_MAX_RETRIEVAL_TIER)
+        result = await _retriever.search(body.query, tier_limit=tier_limit)
         obs_list = (
             await _retriever.get_observations(result.obs_ids) if result.obs_ids else []
         )
@@ -230,7 +233,7 @@ async def search(
             {
                 "query": body.query,
                 "source_tier": result.source_tier,
-                "tier_label": {1: "FTS5", 2: "graph", 3: "vector", 4: "agent"}.get(
+                "tier_label": {1: "FTS5", 2: "graph", 3: "vector"}.get(
                     result.source_tier, "none"
                 ),
                 "latency_ms": round(result.latency_ms, 1),

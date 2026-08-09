@@ -3,48 +3,18 @@ import uuid
 from typing import Union
 
 from agent.utils import check_size_limits
+from supermem.privacy.filter import PrivacyFilter
+
+_RAW_VAULT_ACCESS_DENIED = (
+    "Error: Raw Agent vault inspection is unavailable pending a "
+    "source-aware lifecycle broker."
+)
 
 
 def get_size(file_or_dir_path: str) -> int:
-    """
-    Get the size of a file or directory.
-
-    Args:
-        file_or_dir_path: The path to the file or directory.
-                          If empty string, returns total memory directory size.
-
-    Returns:
-        The size of the file or directory in bytes.
-    """
-    # Handle empty string by returning total memory size
-    if not file_or_dir_path or file_or_dir_path == "":
-        # Get the current working directory (which should be the memory root)
-        cwd = os.getcwd()
-        total_size = 0
-        for dirpath, dirnames, filenames in os.walk(cwd):
-            for filename in filenames:
-                file_path = os.path.join(dirpath, filename)
-                try:
-                    total_size += os.path.getsize(file_path)
-                except OSError:
-                    pass
-        return total_size
-
-    # Otherwise check the specific path
-    if os.path.isfile(file_or_dir_path):
-        return os.path.getsize(file_or_dir_path)
-    elif os.path.isdir(file_or_dir_path):
-        total_size = 0
-        for dirpath, dirnames, filenames in os.walk(file_or_dir_path):
-            for filename in filenames:
-                file_path = os.path.join(dirpath, filename)
-                try:
-                    total_size += os.path.getsize(file_path)
-                except OSError:
-                    pass
-        return total_size
-    else:
-        raise FileNotFoundError(f"Path not found: {file_or_dir_path}")
+    """Deny raw file-size and directory-size inspection to Agent callers."""
+    del file_or_dir_path
+    raise PermissionError(_RAW_VAULT_ACCESS_DENIED)
 
 
 def create_file(file_path: str, content: str = "") -> bool:
@@ -69,7 +39,7 @@ def create_file(file_path: str, content: str = "") -> bool:
             os.makedirs(parent_dir, exist_ok=True)
 
         # Create a unique temporary file name in the same directory as the target file
-        # This ensures the temp file is within the sandbox's allowed path
+        # This keeps the temp file within the restricted executor's allowed path.
         target_dir = os.path.dirname(os.path.abspath(file_path)) or "."
         temp_file_path = os.path.join(target_dir, f"temp_{uuid.uuid4().hex[:8]}.txt")
 
@@ -90,8 +60,10 @@ def create_file(file_path: str, content: str = "") -> bool:
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
-            except Exception as e:
-                raise Exception(f"Error removing temp file {temp_file_path}: {e}")
+            except Exception as cleanup_exc:
+                raise Exception(
+                    f"Error removing temp file {temp_file_path}: {cleanup_exc}"
+                )
         raise Exception(f"Error creating file {file_path}: {e}")
 
 
@@ -150,6 +122,13 @@ def update_file(file_path: str, old_content: str, new_content: str) -> Union[boo
 
         with open(file_path, "r") as f:
             current_content = f.read()
+            private_was_redacted = bool(getattr(f, "_supermem_private_redacted", False))
+
+        if private_was_redacted or PrivacyFilter.has_private(current_content):
+            return (
+                "Error: Files containing private blocks cannot be updated "
+                "through the restricted agent tool."
+            )
 
         # Check if old_content exists in the file
         if old_content not in current_content:
@@ -183,116 +162,21 @@ def update_file(file_path: str, old_content: str, new_content: str) -> Union[boo
 
         return True
 
-    except PermissionError:
-        return f"Error: Permission denied writing to '{file_path}'"
+    except PermissionError as exc:
+        return f"Error: {exc}"
     except Exception as e:
         return f"Error: Unexpected error - {str(e)}"
 
 
 def read_file(file_path: str) -> str:
-    """
-    Read a file in the memory.
-
-    Args:
-        file_path: The path to the file.
-
-    Returns:
-        The content of the file, or an error message if the file cannot be read.
-    """
-    try:
-        # Ensure the file path is properly resolved
-        if not os.path.exists(file_path):
-            return f"Error: File {file_path} does not exist"
-
-        if not os.path.isfile(file_path):
-            return f"Error: {file_path} is not a file"
-
-        with open(file_path, "r") as f:
-            return f.read()
-    except PermissionError:
-        return f"Error: Permission denied accessing {file_path}"
-    except Exception as e:
-        return f"Error: {e}"
+    """Deny raw vault-content inspection to Agent callers."""
+    del file_path
+    return _RAW_VAULT_ACCESS_DENIED
 
 
 def list_files() -> str:
-    """
-    Display all files and directories in the current working directory as a tree structure.
-
-    Example output:
-    ```
-    ./
-    ├── user.md
-    └── entities/
-        ├── 452_willow_creek_dr.md
-        └── frank_miller_plumbing.md
-    ```
-
-    Returns:
-        A string representation of the directory tree.
-    """
-    try:
-        # Always use current working directory
-        dir_path = os.getcwd()
-
-        def build_tree(start_path, prefix="", is_last=True):
-            """Recursively build tree structure"""
-            entries = []
-            try:
-                items = sorted(os.listdir(start_path))
-                # Filter out hidden files and __pycache__
-                items = [
-                    item
-                    for item in items
-                    if not item.startswith(".") and item != "__pycache__"
-                ]
-            except PermissionError:
-                return f"{prefix}[Permission Denied]\n"
-
-            if not items:
-                return ""
-
-            for i, item in enumerate(items):
-                item_path = os.path.join(start_path, item)
-                is_last_item = i == len(items) - 1
-
-                # Choose the right prefix characters
-                if is_last_item:
-                    current_prefix = prefix + "└── "
-                    extension = prefix + "    "
-                else:
-                    current_prefix = prefix + "├── "
-                    extension = prefix + "│   "
-
-                if os.path.isdir(item_path):
-                    # Check if directory is empty
-                    try:
-                        dir_contents = [
-                            f
-                            for f in os.listdir(item_path)
-                            if not f.startswith(".") and f != "__pycache__"
-                        ]
-                        if not dir_contents:
-                            entries.append(f"{current_prefix}{item}/ (empty)\n")
-                        else:
-                            entries.append(f"{current_prefix}{item}/\n")
-                            # Recursively add subdirectory contents
-                            entries.append(
-                                build_tree(item_path, extension, is_last_item)
-                            )
-                    except PermissionError:
-                        entries.append(f"{current_prefix}{item}/ [Permission Denied]\n")
-                else:
-                    entries.append(f"{current_prefix}{item}\n")
-
-            return "".join(entries)
-
-        # Start with the root directory
-        tree = f"./\n{build_tree(dir_path)}"
-        return tree.rstrip()  # Remove trailing newline
-
-    except Exception as e:
-        return f"Error: {e}"
+    """Deny raw vault-directory inspection to Agent callers."""
+    return _RAW_VAULT_ACCESS_DENIED
 
 
 def delete_file(file_path: str) -> bool:
@@ -313,68 +197,18 @@ def delete_file(file_path: str) -> bool:
 
 
 def go_to_link(link_string: str) -> str:
-    """
-    Go to a link in the memory and return the content of the note Y. A link in a note X to a note Y, with the
-    path path/to/note/Y.md, is structured like this:
-    [[path/to/note/Y]]
-
-    Args:
-        link_string: The link to go to.
-
-    Returns:
-        The content of the note Y, or an error message if the link cannot be accessed.
-    """
-    try:
-        # Handle Obsidian-style links: [[path/to/note]] -> path/to/note.md
-        if link_string.startswith("[[") and link_string.endswith("]]"):
-            file_path = link_string[2:-2]  # Remove [[ and ]]
-            if not file_path.endswith(".md"):
-                file_path += ".md"
-        else:
-            file_path = link_string
-
-        # Ensure the file path is properly resolved
-        if not os.path.exists(file_path):
-            return f"Error: File {file_path} not found"
-
-        if not os.path.isfile(file_path):
-            return f"Error: {file_path} is not a file"
-
-        with open(file_path, "r") as f:
-            return f.read()
-    except PermissionError:
-        return f"Error: Permission denied accessing {link_string}"
-    except Exception as e:
-        return f"Error: {e}"
+    """Deny linked vault-content inspection to Agent callers."""
+    del link_string
+    return _RAW_VAULT_ACCESS_DENIED
 
 
 def check_if_file_exists(file_path: str) -> bool:
-    """
-    Check if a file exists in the given filepath.
-
-    Args:
-        file_path: The path to the file.
-
-    Returns:
-        True if the file exists and is a file, False otherwise.
-    """
-    try:
-        return os.path.exists(file_path) and os.path.isfile(file_path)
-    except (OSError, TypeError, ValueError):
-        return False
+    """Deny Agent file-presence probes without revealing path metadata."""
+    del file_path
+    return False
 
 
 def check_if_dir_exists(dir_path: str) -> bool:
-    """
-    Check if a directory exists in the given filepath.
-
-    Args:
-        dir_path: The path to the directory.
-
-    Returns:
-        True if the directory exists and is a directory, False otherwise.
-    """
-    try:
-        return os.path.exists(dir_path) and os.path.isdir(dir_path)
-    except (OSError, TypeError, ValueError):
-        return False
+    """Deny Agent directory-presence probes without revealing metadata."""
+    del dir_path
+    return False

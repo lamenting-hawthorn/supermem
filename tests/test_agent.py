@@ -1,11 +1,11 @@
 """
 Unit tests for agent/agent.py — the Agent class.
 
-LLM calls are mocked throughout so tests run without a running model server.
+Tier-4 navigation is disabled, so these tests verify that no model path runs.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import pytest
 
 from agent.agent import Agent
@@ -35,14 +35,10 @@ PYTHON_THEN_REPLY = (
 @pytest.fixture
 def agent(tmp_path):
     """
-    Create an Agent instance with mocked LLM client and system prompt loading.
+    Create an unavailable Agent instance with a mocked system prompt.
     Memory path is a real temporary directory.
     """
-    with (
-        patch("agent.agent.load_system_prompt", return_value=FAKE_SYSTEM_PROMPT),
-        patch("agent.agent.create_openai_client", return_value=MagicMock()),
-        patch("agent.agent.create_vllm_client", return_value=MagicMock()),
-    ):
+    with patch("agent.agent.load_system_prompt", return_value=FAKE_SYSTEM_PROMPT):
         a = Agent(memory_path=str(tmp_path), predetermined_memory_path=False)
         a.memory_path = str(tmp_path)  # ensure absolute path is the tmp dir
         return a
@@ -64,6 +60,9 @@ class TestAgentInit:
 
     def test_default_max_tool_turns(self, agent):
         assert agent.max_tool_turns > 0
+
+    def test_unavailable_agent_does_not_construct_a_model_client(self, agent):
+        assert agent._client is None
 
 
 # ---------------------------------------------------------------------------
@@ -115,69 +114,24 @@ class TestExtractResponseParts:
 
 
 # ---------------------------------------------------------------------------
-# chat — end-to-end with mocked LLM
+# chat — disabled pending a lifecycle-aware source broker
 # ---------------------------------------------------------------------------
 
 
 class TestChat:
-    def test_simple_chat_returns_agent_response(self, agent):
-        with patch(
-            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
-        ):
-            response = agent.chat("Hello")
-
+    def test_direct_agent_fails_closed_before_model_invocation(self, agent):
+        with patch("agent.model.get_model_response") as model_response:
+            response = agent.chat("lifecycle-canary")
         assert isinstance(response, AgentResponse)
-        assert response.reply == "Here is your answer."
-
-    def test_user_message_added_to_history(self, agent):
-        with patch(
-            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
-        ):
-            agent.chat("What is my name?")
-
-        user_messages = [m for m in agent.messages if m.role == Role.USER]
-        assert any("What is my name?" in m.content for m in user_messages)
-
-    def test_assistant_message_added_to_history(self, agent):
-        with patch(
-            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
-        ):
-            agent.chat("Hello")
-
-        assistant_messages = [m for m in agent.messages if m.role == Role.ASSISTANT]
-        assert len(assistant_messages) >= 1
-
-    def test_tool_turn_loop_runs_when_no_reply(self, agent):
-        """
-        When the first response has no <reply>, the agent should loop and
-        call get_model_response again, feeding back tool results.
-        """
-        responses = iter(
-            [
-                # First call: python code, no reply yet
-                "<python>x = 1 + 1</python>",
-                # Second call: reply
-                SIMPLE_REPLY_RESPONSE,
-            ]
-        )
-
-        with (
-            patch(
-                "agent.agent.get_model_response",
-                side_effect=lambda **_: next(responses),
-            ),
-            patch("agent.agent.execute_sandboxed_code", return_value=({"x": 2}, "")),
-            patch("agent.agent.create_memory_if_not_exists"),
-        ):
-            response = agent.chat("What is 1+1?")
-
-        assert response.reply == "Here is your answer."
+        assert response.reply
+        assert "unavailable" in response.reply.lower()
+        assert "lifecycle-canary" not in response.reply
+        assert response.python_block is None
+        assert len(agent.messages) == 1
+        model_response.assert_not_called()
 
     def test_save_conversation_creates_file(self, agent, tmp_path):
-        with patch(
-            "agent.agent.get_model_response", return_value=SIMPLE_REPLY_RESPONSE
-        ):
-            agent.chat("Hello")
+        agent.chat("Hello")
 
         save_dir = str(tmp_path / "conversations")
         agent.save_conversation(save_folder=save_dir)
