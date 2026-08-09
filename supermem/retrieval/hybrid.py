@@ -1,6 +1,6 @@
-"""HybridRetriever — orchestrates all four retrieval tiers.
+"""HybridRetriever — orchestrates lifecycle-aware retrieval tiers 1–3.
 
-Tier 1 (FTS5) → Tier 2 (Kuzu graph) → Tier 3 (ChromaDB) → Tier 4 (Agent).
+Tier 1 (FTS5) → Tier 2 (Kuzu graph) → Tier 3 (ChromaDB).
 
 Short-circuits when min_results is reached. Skips unavailable tiers with
 a WARNING log entry (graceful degradation). Returns merged, deduplicated
@@ -15,6 +15,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from supermem.config import SUPERMEM_MAX_RETRIEVAL_TIER
 from supermem.core.retriever import RetrievalResult
 from supermem.logging import get_logger
 
@@ -28,7 +29,7 @@ log = get_logger(__name__)
 
 class HybridRetriever:
     """
-    Orchestrates the four retrieval tiers in order.
+    Orchestrates the supported lifecycle-aware retrieval tiers in order.
 
     Usage:
         retriever = HybridRetriever(db=db, graph=graph, chroma=chroma)
@@ -46,25 +47,24 @@ class HybridRetriever:
         from supermem.retrieval.fts import FTSRetriever
         from supermem.retrieval.graph import GraphRetriever
         from supermem.retrieval.vector import VectorRetriever
-        from supermem.retrieval.agent import AgentRetriever
 
         self._db = db
         self._fts = FTSRetriever(db)
         self._graph_retriever = GraphRetriever(db, graph)
         self._vector = VectorRetriever(chroma)
-        self._agent = AgentRetriever(memory_path=memory_path, db=db)
+        del memory_path
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
     async def search(
         self,
         query: str,
-        tier_limit: int = 4,
+        tier_limit: int = SUPERMEM_MAX_RETRIEVAL_TIER,
         min_results: int = 3,
         limit: int = 20,
     ) -> RetrievalResult:
         """
-        Search through tiers 1 → tier_limit in order.
+        Search through supported tiers 1 → 3 in order.
 
         - Short-circuits when len(obs_ids) >= min_results.
         - Skips unavailable tiers (logs WARNING).
@@ -73,13 +73,14 @@ class HybridRetriever:
 
         Args:
             query: Natural language query.
-            tier_limit: Maximum tier to try (1–4). Default 4.
+            tier_limit: Maximum tier to try (1–3). Values above 3 are capped.
             min_results: Stop early when this many results are found.
             limit: Max total obs_ids to return.
 
         Returns:
             RetrievalResult with merged obs_ids and source_tier of highest tier used.
         """
+        tier_limit = min(tier_limit, SUPERMEM_MAX_RETRIEVAL_TIER)
         t0 = time.monotonic() * 1000
         all_ids: list[int] = []
         highest_tier = 0
@@ -126,15 +127,6 @@ class HybridRetriever:
 
             if len(all_ids) >= min_results:
                 return self._build(all_ids[:limit], highest_tier, t0)
-
-        # ── Tier 4: Agent fallback ────────────────────────────────────────────
-        if tier_limit >= 4:
-            log.info("tier4_agent_fallback", query=query, prior_results=len(all_ids))
-            r4 = await self._agent.search(query, limit=1)
-            new_ids = [i for i in r4.obs_ids if i not in set(all_ids)]
-            all_ids = await self._active_ids(_merge(all_ids, new_ids))
-            if new_ids:
-                highest_tier = 4
 
         return self._build((await self._active_ids(all_ids))[:limit], highest_tier, t0)
 

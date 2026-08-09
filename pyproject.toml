@@ -1,7 +1,7 @@
 [project]
 name = "supermem"
 version = "0.3.1"
-description = "Persistent AI memory without RAG — four-tier retrieval (SQLite FTS5 → graph → vectors → LLM agent)"
+description = "Persistent AI memory without RAG — lifecycle-aware local retrieval"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
@@ -44,16 +44,15 @@ dependencies = [
     "rich>=13.7.0",
     "tenacity>=9.1.4",
 
-    # ── Code formatting (used by agent sandbox) ─────────────────────────────
+    # ── Code formatting (used by the restricted local executor) ─────────────
     "black",
 ]
 
 [project.optional-dependencies]
-# HTTP dashboard + SSE transport (separate from core MCP)
+# Optional loopback HTTP dashboard and API (separate from core MCP)
 worker = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
-    "sse-starlette>=2.0.0",
 ]
 # ChromaDB vector retrieval (tier 3)
 vector = [

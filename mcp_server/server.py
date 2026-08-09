@@ -1,4 +1,4 @@
-"""supermem MCP server — FastMCP with four-tier hybrid retrieval.
+"""supermem MCP server — FastMCP with lifecycle-aware three-tier retrieval.
 
 Tools:
   use_memory_agent   — original tool, now routes through HybridRetriever first
@@ -10,7 +10,7 @@ Tools:
   list_day_summaries — local daily summaries
   retract_observation — mark a memory retracted/forgotten
 
-Auth:    Bearer token via SUPERMEM_API_KEY (disabled when unset).
+Auth:    Trusted local stdio is unauthenticated; HTTP requires configured Bearer auth.
 Rate:    SUPERMEM_RATE_LIMIT requests/min per client (default 60).
 Session: Created on startup, closed with AI summary on shutdown.
 
@@ -23,15 +23,23 @@ import asyncio
 import collections
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import os
+import secrets
+import signal
 import socket
 import sys
 import time
 import uuid
-from typing import Any
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastmcp import FastMCP, Context
+from starlette.middleware import Middleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # Ensure repository root is on sys.path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -39,18 +47,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 FILTERS_PATH = os.path.join(REPO_ROOT, ".filters")
-IS_DARWIN = sys.platform == "darwin"
-
-try:
-    from mcp_server.settings import MEMORY_AGENT_NAME, MLX_4BIT_MEMORY_AGENT_NAME
-except Exception:
-    from settings import MEMORY_AGENT_NAME  # type: ignore[no-redef]
-
-    MLX_4BIT_MEMORY_AGENT_NAME = "mem-agent-mlx@4bit"
 
 from supermem.config import (  # noqa: E402
     SUPERMEM_API_KEY,
     SUPERMEM_DEFAULT_TIER_LIMIT,
+    SUPERMEM_MAX_RETRIEVAL_TIER,
     SUPERMEM_MIN_RESULTS,
     SUPERMEM_RATE_LIMIT,
     SUPERMEM_VAULT_PATH,
@@ -102,22 +103,6 @@ def _repo_root() -> str:
     return REPO_ROOT
 
 
-def _read_memory_path() -> str:
-    return str(SUPERMEM_VAULT_PATH)
-
-
-def _read_mlx_model_name(default_model: str) -> str:
-    model_file = os.path.join(REPO_ROOT, ".mlx_model_name")
-    try:
-        if os.path.exists(model_file):
-            raw = open(model_file).read().strip().strip("'\"")
-            if raw:
-                return raw
-    except Exception:
-        pass
-    return default_model
-
-
 def _read_filters() -> str:
     try:
         return open(FILTERS_PATH).read().strip()
@@ -129,42 +114,150 @@ def _transport_is_stdio() -> bool:
     return os.getenv("MCP_TRANSPORT", "stdio").strip().lower() == "stdio"
 
 
-def _auth_ok(ctx: Context | None) -> bool:
-    """Return True if auth is disabled, stdio is explicit, or Bearer auth passes."""
-    if not SUPERMEM_API_KEY:
-        return True  # auth disabled in personal mode
-    if ctx is None:
-        return _transport_is_stdio()
+_TRUSTED_LOCAL_STDIO = object()
+
+
+def _request_context(ctx: Context | object | None) -> tuple[Any | None, bool]:
+    """Return ``(HTTP request, is trusted local stdio)`` for an MCP context."""
+    if ctx is _TRUSTED_LOCAL_STDIO:
+        return None, _transport_is_stdio()
+    if type(ctx) is not Context:
+        # Absent and compatibility-only objects are not transport identities.
+        return None, False
+    primary_context = cast(Context, ctx)
     try:
-        request = ctx.get_http_request()
-    except RuntimeError:
-        return _transport_is_stdio()
-    except AttributeError:
-        return _transport_is_stdio()
+        if primary_context.fastmcp is not mcp:
+            # Exact contexts owned by a different FastMCP instance are not ours.
+            return None, False
+    except Exception:
+        return None, False
+    try:
+        request = primary_context.request_context.request
+    except (LookupError, RuntimeError, ValueError):
+        # A Context object outside an active FastMCP request is not stdio proof.
+        return None, False
     except Exception as exc:
         log.warning("auth_context_error", error=str(exc))
+        return None, False
+    if request is None:
+        return None, _transport_is_stdio()
+    if type(request) is Request:
+        return request, False
+    return None, False
+
+
+def _auth_ok(ctx: Context | object | None) -> bool:
+    """Allow trusted local stdio or HTTP with the configured Bearer token."""
+    request, is_stdio = _request_context(ctx)
+    if is_stdio:
+        return True
+    if request is None or not SUPERMEM_API_KEY:
         return False
     auth_header = request.headers.get("authorization", "")
-    return auth_header == f"Bearer {SUPERMEM_API_KEY}"
+    return secrets.compare_digest(auth_header, f"Bearer {SUPERMEM_API_KEY}")
 
 
-def _client_id(ctx: Context | None) -> str:
-    """Best-effort client identity for rate limiting, shared across all tools."""
-    if ctx is None:
-        return "local"
+class PrimaryHTTPAuthMiddleware:
+    """Reject unauthenticated HTTP before FastMCP allocates a session."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            auth_header = Request(scope).headers.get("authorization", "")
+            expected = f"Bearer {SUPERMEM_API_KEY}"
+            if not SUPERMEM_API_KEY or not secrets.compare_digest(
+                auth_header, expected
+            ):
+                response = JSONResponse(
+                    {"error": "unauthorized", "detail": "Bearer token required."},
+                    status_code=401,
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def primary_http_middleware() -> list[Middleware]:
+    """Return primary-server ASGI middleware for authenticated HTTP only."""
+    return [Middleware(PrimaryHTTPAuthMiddleware)]
+
+
+def create_primary_http_app(
+    path: str = "/mcp",
+    *,
+    json_response: bool | None = None,
+):
+    """Build the authenticated, stateless primary HTTP ASGI application.
+
+    This helper is deliberately the same middleware configuration passed to
+    ``mcp.run_async(transport="http", ...)`` below, so ASGI tests cover the
+    primary server boundary rather than a tool-only approximation of it. The
+    local HTTP profile deliberately does not retain MCP transport sessions.
+    """
+    return mcp.http_app(
+        path=path,
+        middleware=primary_http_middleware(),
+        json_response=json_response,
+        stateless_http=True,
+    )
+
+
+def _validated_loopback_host(value: str | None) -> str:
+    """Return an allowed loopback bind host or reject it before socket setup."""
+    host = (value or "127.0.0.1").strip()
+    if not host:
+        host = "127.0.0.1"
+    if host.lower() == "localhost":
+        return "localhost"
     try:
-        request = ctx.get_http_request()
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError(
+            "MCP_HOST must be localhost or a loopback IP literal."
+        ) from exc
+    if not address.is_loopback:
+        raise ValueError("MCP_HOST must be localhost or a loopback IP literal.")
+    return host
+
+
+def _loopback_socket_family(host: str) -> socket.AddressFamily:
+    """Choose the matching address family for an already validated host."""
+    if host.lower() != "localhost" and ipaddress.ip_address(host).version == 6:
+        return socket.AF_INET6
+    return socket.AF_INET
+
+
+def _ephemeral_loopback_port(host: str) -> int:
+    """Reserve an available loopback port long enough to select it for FastMCP."""
+    with socket.socket(_loopback_socket_family(host), socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
+def _client_id(ctx: Context | object | None) -> str:
+    """Best-effort client identity for rate limiting, shared across all tools."""
+    request, is_stdio = _request_context(ctx)
+    if is_stdio:
+        return "local"
+    if request is not None:
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             digest = hashlib.sha256(auth_header[7:].encode()).hexdigest()[:16]
             return f"bearer:{digest}"
         host = getattr(request.client, "host", "unknown")
         return f"http:{host}"
-    except Exception:
-        return "stdio"
+    return "unknown"
 
 
-def _guard_tool(ctx: Context | None, tool_name: str) -> str | None:
+def _retrieval_tier_limit(ctx: Context | object | None, requested: int) -> int:
+    """Cap every caller at the lifecycle-aware Tier 3 retrieval boundary."""
+    del ctx
+    return min(requested, SUPERMEM_MAX_RETRIEVAL_TIER)
+
+
+def _guard_tool(ctx: Context | object | None, tool_name: str) -> str | None:
     """Apply common MCP auth and rate limiting; return an error string on denial."""
     if not _auth_ok(ctx):
         return "auth_error: Bearer token required. Set SUPERMEM_API_KEY."
@@ -185,7 +278,18 @@ def _validate_int_bounds(
 
 # ── MCP application ───────────────────────────────────────────────────────────
 
-mcp = FastMCP("supermem-server")
+
+@asynccontextmanager
+async def _supermem_lifespan(_: FastMCP) -> AsyncIterator[dict[str, object]]:
+    """Let FastMCP own startup and shutdown for every supported transport."""
+    try:
+        await _startup()
+        yield {}
+    finally:
+        await _shutdown()
+
+
+mcp = FastMCP("supermem-server", lifespan=_supermem_lifespan)
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
@@ -196,9 +300,9 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
     """
     Query the supermem memory system.
 
-    Routes through the four-tier HybridRetriever first (fast). Falls back
-    to the LLM agent (slow) only when the faster tiers return insufficient
-    results. Pass the user query AS IS without modifications.
+    Routes through lifecycle-aware HybridRetriever tiers 1-3. Tier 4 / raw
+    Agent vault navigation is unavailable until a source-aware broker exists.
+    Pass the user query AS IS.
 
     Args:
         question: The user query to process.
@@ -219,11 +323,11 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
     query = question + (f"\n\n<filter>{filters}</filter>" if filters else "")
 
     try:
-        # ── Fast path: HybridRetriever tiers 1-3 ─────────────────────────────
+        # ── Supported path: lifecycle-aware HybridRetriever tiers 1-3 ───────
         if _ctx.retriever is not None:
             result = await _ctx.retriever.search(
                 query=query,
-                tier_limit=SUPERMEM_DEFAULT_TIER_LIMIT,
+                tier_limit=_retrieval_tier_limit(ctx, SUPERMEM_DEFAULT_TIER_LIMIT),
                 min_results=SUPERMEM_MIN_RESULTS,
             )
 
@@ -241,38 +345,7 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
                     )
                 return reply
 
-        # ── Slow path: legacy agent (tier 4 fallback) ─────────────────────────
-        from agent import Agent
-
-        agent = Agent(
-            model=(
-                MEMORY_AGENT_NAME
-                if not IS_DARWIN
-                else _read_mlx_model_name(MLX_4BIT_MEMORY_AGENT_NAME)
-            ),
-            use_vllm=not IS_DARWIN,
-            predetermined_memory_path=False,
-            memory_path=_read_memory_path(),
-        )
-
-        loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, agent.chat, query)
-        while not fut.done():
-            await ctx.report_progress(progress=1)
-            await asyncio.sleep(2)
-        agent_result = await fut
-        await ctx.report_progress(progress=1, total=1)
-        reply = (agent_result.reply or "").strip()
-
-        if _ctx.capture is not None and _ctx.session_id >= 0:
-            await _ctx.capture.record(
-                content=f"Q: {question}\nA: {reply}",
-                session_id=_ctx.session_id,
-                tool_name="use_memory_agent",
-                tier_used=4,
-                latency_ms=(time.monotonic() - t0) * 1000,
-            )
-        return reply
+        return "No eligible memory results found."
 
     except Exception as exc:
         log.warning("use_memory_agent_error", error=str(exc))
@@ -282,19 +355,19 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
 @mcp.tool
 async def supermem_hybrid(
     query: str,
-    tier_limit: int = 4,
+    tier_limit: int = SUPERMEM_MAX_RETRIEVAL_TIER,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """
     Tiered hybrid memory search with explicit source attribution.
 
-    Tries retrieval tiers in order: FTS5 (1) → Kuzu graph (2) →
-    ChromaDB vectors (3) → LLM agent (4). Returns results annotated
-    with which tier answered the query.
+    Tries lifecycle-aware retrieval tiers in order: FTS5 (1) → Kuzu graph (2)
+    → ChromaDB vectors (3). Raw Agent vault navigation (Tier 4) is unavailable
+    until a source-aware lifecycle broker exists.
 
     Args:
         query: Natural language search query.
-        tier_limit: Maximum tier to try (1–4). Default 4.
+        tier_limit: Maximum tier to try (1–3). Requests above 3 are capped.
 
     Returns:
         JSON string with obs_ids, source_tier, latency_ms, and observation content.
@@ -306,7 +379,9 @@ async def supermem_hybrid(
         return json.dumps({"error": "HybridRetriever not initialised", "obs_ids": []})
 
     try:
-        result = await _ctx.retriever.search(query=query, tier_limit=tier_limit)
+        result = await _ctx.retriever.search(
+            query=query, tier_limit=_retrieval_tier_limit(ctx, tier_limit)
+        )
         obs_list = (
             await _ctx.retriever.get_observations(result.obs_ids)
             if result.obs_ids
@@ -316,7 +391,7 @@ async def supermem_hybrid(
         payload = {
             "query": query,
             "source_tier": result.source_tier,
-            "tier_label": {1: "FTS5", 2: "Kuzu graph", 3: "ChromaDB", 4: "Agent"}.get(
+            "tier_label": {1: "FTS5", 2: "Kuzu graph", 3: "ChromaDB"}.get(
                 result.source_tier, "none"
             ),
             "latency_ms": round(result.latency_ms, 1),
@@ -613,7 +688,7 @@ async def _shutdown() -> None:
 
 def _format_obs_reply(obs_list: list[dict], tier: int) -> str:
     """Format retrieved observations into a human-readable reply."""
-    tier_label = {1: "FTS5", 2: "graph", 3: "vector", 4: "agent"}.get(tier, "?")
+    tier_label = {1: "FTS5", 2: "graph", 3: "vector"}.get(tier, "?")
     parts = [f"[from {tier_label} memory]"]
     for obs in obs_list[:5]:  # cap at 5 to keep context size reasonable
         content = obs.get("content", "").strip()
@@ -624,31 +699,57 @@ def _format_obs_reply(obs_list: list[dict], tier: int) -> str:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
+async def _main() -> None:
+    """Run one supported FastMCP transport inside its own async lifecycle."""
+    transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
+    if transport == "http":
+        host = _validated_loopback_host(os.getenv("MCP_HOST"))
+        path = os.getenv("MCP_PATH", "/mcp/")
+        port_str = os.getenv("MCP_PORT", "")
+        if not port_str or port_str == "0":
+            port = _ephemeral_loopback_port(host)
+        else:
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = _ephemeral_loopback_port(host)
+        await mcp.run_async(
+            transport="http",
+            host=host,
+            port=port,
+            path=path,
+            middleware=primary_http_middleware(),
+            stateless_http=True,
+        )
+    elif transport == "stdio":
+        await mcp.run_async(transport="stdio")
+    else:
+        raise ValueError("Unsupported MCP_TRANSPORT; expected 'stdio' or 'http'.")
+
+
+def _run_entrypoint() -> None:
+    """Bridge Uvicorn's restored SIGTERM into FastMCP lifespan cleanup."""
+    termination_signal: int | None = None
+
+    def _sigterm_bridge(signum: int, _frame: object) -> None:
+        nonlocal termination_signal
+        termination_signal = signum
+        raise KeyboardInterrupt
+
+    previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_bridge)
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        # Preserve ordinary Ctrl-C behavior; consume only the SIGTERM bridge.
+        if termination_signal is None:
+            raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+    if termination_signal is not None:
+        raise SystemExit(128 + termination_signal)
+
+
 if __name__ == "__main__":
-
-    async def _main() -> None:
-        await _startup()
-        try:
-            transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
-            if transport == "http":
-                host = os.getenv("MCP_HOST", "127.0.0.1")
-                path = os.getenv("MCP_PATH", "/mcp/")
-                port_str = os.getenv("MCP_PORT", "")
-                if not port_str or port_str == "0":
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.bind((host, 0))
-                        port = s.getsockname()[1]
-                else:
-                    try:
-                        port = int(port_str)
-                    except ValueError:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.bind((host, 0))
-                            port = s.getsockname()[1]
-                mcp.run(transport="http", host=host, port=port, path=path)
-            else:
-                mcp.run(transport="stdio")
-        finally:
-            await _shutdown()
-
-    asyncio.run(_main())
+    _run_entrypoint()

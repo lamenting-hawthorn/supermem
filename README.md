@@ -1,6 +1,7 @@
 # supermem
 
-> **Persistent AI memory without RAG** — four-tier retrieval that uses an LLM agent only as a last resort, backed by SQLite FTS5, an embedded graph database, and your local markdown vault.
+> **Persistent AI memory without RAG** — local-first, lifecycle-aware retrieval
+> backed by SQLite FTS5, an embedded graph database, and your markdown vault.
 
 [![PyPI](https://img.shields.io/pypi/v/supermem)](https://pypi.org/project/supermem/)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
@@ -9,13 +10,17 @@
 [![Docker](https://img.shields.io/badge/downloads-140%2B-orange)](https://github.com/lamenting-hawthorn/supermem/pkgs/container/supermem)
 [![CI](https://github.com/lamenting-hawthorn/supermem/actions/workflows/ci.yml/badge.svg)](https://github.com/lamenting-hawthorn/supermem/actions/workflows/ci.yml)
 
-An MCP (Model Context Protocol) server that gives AI assistants — Claude Desktop, LM Studio, ChatGPT — **persistent, structured memory** backed by SQLite + an optional graph database. The LLM agent is tier 4, not the default path — most queries resolve in milliseconds via full-text search.
+An MCP (Model Context Protocol) server for trusted local stdio clients and
+authenticated loopback HTTP clients. It provides **persistent, structured
+memory** backed by SQLite plus an optional graph database. Supported memory
+retrieval stops at lifecycle-aware tiers 1–3; raw-vault Agent navigation (Tier
+4) is unavailable until a source-aware lifecycle broker exists.
 
 ## Highlights
 
 | Capability | What it gives you |
 |------------|-------------------|
-| **Four-tier retrieval** | Fast FTS5 first, graph expansion second, optional vector search third, and LLM fallback only when needed. |
+| **Boundary-aware retrieval** | Fast FTS5 first, graph expansion second, and optional vector search third. Every supported transport stops at Tier 3. |
 | **Local-first vault** | Markdown files remain portable and inspectable; SQLite/Kuzu/Chroma indexes can be rebuilt. |
 | **Memory lifecycle** | Observations carry provenance, confidence, sensitivity, validity, TTL, and `active`/`retracted` status metadata. |
 | **Retraction workflow** | Stale or sensitive observations can be retracted from FTS, vector-backed retrieval, timelines, and derived summaries. |
@@ -52,7 +57,7 @@ Add to Claude Desktop `mcp.json`:
 
 ---
 
-## Quick Start (Production with Docker)
+## Quick Start (Local Docker)
 
 ```bash
 # Clone and configure
@@ -71,9 +76,13 @@ docker compose --profile worker up
 
 ---
 
-## Architecture: Four-Tier Retrieval
+## Architecture: Boundary-Aware Retrieval
 
-Every query goes through tiers in order, short-circuiting when enough results are found. Tiers 1–3 never call an LLM.
+Retrieval proceeds in order and short-circuits when enough results are found.
+Tiers 1–3 never call an LLM. Every supported transport is capped at Tier 3.
+Tier 4 raw-vault Agent navigation is deliberately unavailable until a
+source-aware lifecycle broker can enforce the same retraction and deletion
+policy as indexed retrieval.
 
 ```
 Query
@@ -87,11 +96,11 @@ Query
   ├─ Tier 3: ChromaDB vector similarity            ~50ms   optional (SUPERMEM_VECTOR=true)
   │          sentence-transformer embeddings
   │
-  └─ Tier 4: LLM agent fallback                   ~5-30s  always available
-             navigates vault via a restricted local executor
+  └─ Tier 4: raw-vault Agent navigation            unavailable
+             pending a source-aware lifecycle broker
 ```
 
-**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–4 are skipped entirely. Unavailable tiers are skipped with a WARNING log — no errors raised. Candidate IDs are filtered through observation lifecycle status before being returned, so retracted memories are excluded from search, timeline context, and derived summaries.
+**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–3 are skipped entirely. Candidate IDs are filtered through observation lifecycle status before being returned, so retracted memories are excluded from search, timeline context, and derived summaries.
 
 ---
 
@@ -113,8 +122,8 @@ Use `retract_observation` or `POST /observations/{id}/retract` to mark stale or 
 
 | Tool | Parameters | Returns | Notes |
 |------|-----------|---------|-------|
-| `use_memory_agent` | `query: str` | Formatted answer | Backward-compatible. Routes through all 4 tiers; falls back to full agent only if tiers 1–3 insufficient |
-| `supermem_hybrid` | `query: str`, `tier_limit: int = 4` | JSON with `obs_ids`, `source_tier`, `latency_ms` | Preferred for programmatic use. Token-efficient — returns IDs first |
+| `use_memory_agent` | `question: str` | Formatted answer | Compatibility name; uses lifecycle-aware tiers 1–3 only |
+| `supermem_hybrid` | `query: str`, `tier_limit: int = 3` | JSON with `obs_ids`, `source_tier`, `latency_ms` | Requests above 3 are capped for every transport; Tier 4 is unavailable |
 | `get_observations` | `ids: list[int]` | JSON array of observation dicts | Fetch full content for specific IDs |
 | `get_timeline` | `obs_id: int`, `window: int = 5` | JSON array of chronological observations | Context around a specific observation |
 | `list_open_tasks` | `days: int = 14`, `limit: int = 20` | JSON with likely unresolved tasks | Local heuristic open-loop inbox inspired by ambient memory tools |
@@ -164,7 +173,8 @@ summaries = await list_day_summaries(days=7)
 | `SUPERMEM_DB_PATH` | `~/.supermem/supermem.db` | SQLite database path |
 | `SUPERMEM_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
 | `SUPERMEM_VECTOR` | `false` | Set `true` to enable ChromaDB tier |
-| `SUPERMEM_API_KEY` | _(none)_ | Bearer token for HTTP API auth (disabled if unset) |
+| `SUPERMEM_DEFAULT_TIER_LIMIT` | `3` | Default lifecycle-aware retrieval ceiling; values above 3 are capped |
+| `SUPERMEM_API_KEY` | _(none)_ | Bearer token required for primary MCP HTTP and protected Worker HTTP endpoints (fail closed if unset) |
 | `SUPERMEM_RATE_LIMIT` | `60` | Requests/minute limit per client identity across MCP tools |
 | `SUPERMEM_WORKER_PORT` | `37777` | HTTP dashboard port |
 | `SUPERMEM_COMPRESS_EVERY` | `50` | Observations written before LLM compression |
@@ -223,11 +233,11 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/.well-known/oauth-protected-resource` | GET | RFC 9728-style metadata for remote MCP discovery |
+| `/.well-known/oauth-protected-resource` | GET | Protected-resource metadata only; no OAuth issuer/JWKS/scope validation |
 | `/health` | GET | `{"status":"ok","db":true,"graph":false,"vector":false}` |
 | `/sessions` | GET | Paginated session list with summaries |
-| `/observations` | GET | Filter by session/date/type |
-| `/search` | POST | `{"query": "...", "tier_limit": 4}` |
+| `/observations` | GET | Active observations only; filter by session/type |
+| `/search` | POST | `{"query": "...", "tier_limit": 3}` (HTTP cap) |
 | `/index/rebuild` | POST | Reindex entire vault |
 | `/backup` | GET | Streams vault + DB as `.tar.gz` |
 | `/stats` | GET | `{obs_count, entity_count, session_count, db_size_mb}` |
@@ -236,15 +246,24 @@ Start with `supermem serve --worker` or `docker compose --profile worker up`.
 | `/day-summaries` | GET | Local day summaries with keywords and highlights |
 | `/observations/{id}/retract` | POST | Mark an observation retracted so retrieval ignores it |
 
-Auth: `Authorization: Bearer <SUPERMEM_API_KEY>`. Disabled when env var is unset.
+Auth: protected Worker endpoints require `Authorization: Bearer <SUPERMEM_API_KEY>`
+and fail closed when the key is unset.
 
-> Remote HTTP deployments should set `SUPERMEM_API_KEY` and review [`SECURITY.md`](SECURITY.md). The default posture is trusted local MCP stdio, not internet-facing multi-tenant hosting.
+The primary MCP HTTP profile is authenticated, loopback-only, and stateless:
+each request creates no resumable MCP transport session and no MCP session ID is
+issued. Clients needing persistent protocol sessions should use local stdio.
+
+> Keep HTTP on a trusted loopback/private boundary. Static API-key auth does not establish remote-production or multi-tenant support; see [`SECURITY.md`](SECURITY.md).
 
 ---
 
 ## Privacy and Security
 
-Wrap sensitive content in `<private>...</private>` tags. It is stripped before writing to any storage layer (SQLite, Kuzu, ChromaDB). The content passes through to the restricted local executor only — it never persists.
+Wrap sensitive content in `<private>...</private>` tags. It is stripped before
+writing to any storage layer (SQLite, Kuzu, ChromaDB). Raw Agent vault content
+and metadata inspection are unavailable until a source-aware lifecycle broker
+exists. The restricted executor is not a hostile-code sandbox; remote execution
+remains unsupported.
 
 ```markdown
 # Meeting Notes
@@ -258,8 +277,8 @@ Additional safeguards:
 
 - Backup restore rejects archive members that would escape the configured vault.
 - MCP tools share one auth/rate-limit guard and one per-client rate bucket.
-- The Python executor blocks denied imports, scrubs inherited environment variables, and wraps common filesystem APIs; it is still a restricted local executor, **not** a substitute for container/OS isolation for hostile code.
-- Remote HTTP deployments should set `SUPERMEM_API_KEY`, avoid exposing the worker directly to the public internet, and review [`SECURITY.md`](SECURITY.md).
+- The Python executor blocks denied imports (including direct platform raw-I/O modules), scrubs inherited environment variables, and wraps common filesystem APIs; it is still a restricted local executor, **not** a substitute for container/OS isolation for hostile code.
+- Keep current HTTP surfaces off untrusted networks. OAuth identities, scopes, installed-artifact E2E, staging, and remote-production proof remain future work; see [`SECURITY.md`](SECURITY.md).
 
 ---
 

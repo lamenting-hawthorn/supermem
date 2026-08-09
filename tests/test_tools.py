@@ -88,19 +88,20 @@ class TestCreateDir:
 
 
 class TestReadFile:
-    def test_reads_existing_file(self, memory_with_files):
+    def test_denies_existing_file_without_returning_content(self, memory_with_files):
         path = os.path.join(memory_with_files, "user.md")
         content = read_file(path)
-        assert "Test User" in content
-        assert "Amsterdam" in content
+        assert "unavailable" in content.lower()
+        assert "Test User" not in content
+        assert "Amsterdam" not in content
 
-    def test_returns_error_for_missing_file(self, temp_memory_dir):
+    def test_returns_same_denial_for_missing_file(self, temp_memory_dir):
         result = read_file(os.path.join(temp_memory_dir, "does_not_exist.md"))
-        assert result.startswith("Error")
+        assert "unavailable" in result.lower()
 
-    def test_returns_error_for_directory(self, temp_memory_dir):
+    def test_returns_same_denial_for_directory(self, temp_memory_dir):
         result = read_file(temp_memory_dir)
-        assert result.startswith("Error")
+        assert "unavailable" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,19 @@ class TestUpdateFile:
         with open(path) as f:
             assert f.read() == "line1\nnew_line2\nnew_line3"
 
+    def test_rejects_private_bearing_file_without_mutation(self, temp_memory_dir):
+        path = os.path.join(temp_memory_dir, "note.md")
+        before = b"before <private>secret-canary</private> after"
+        with open(path, "wb") as output:
+            output.write(before)
+
+        result = update_file(path, "before", "changed")
+
+        assert isinstance(result, str)
+        assert "private" in result.lower()
+        with open(path, "rb") as source:
+            assert source.read() == before
+
 
 # ---------------------------------------------------------------------------
 # delete_file
@@ -169,9 +183,9 @@ class TestDeleteFile:
 
 
 class TestExistenceChecks:
-    def test_file_exists(self, memory_with_files):
+    def test_existing_file_is_not_disclosed(self, memory_with_files):
         path = os.path.join(memory_with_files, "user.md")
-        assert check_if_file_exists(path) is True
+        assert check_if_file_exists(path) is False
 
     def test_file_not_exists(self, temp_memory_dir):
         assert check_if_file_exists(os.path.join(temp_memory_dir, "nope.md")) is False
@@ -179,9 +193,9 @@ class TestExistenceChecks:
     def test_dir_not_treated_as_file(self, temp_memory_dir):
         assert check_if_file_exists(temp_memory_dir) is False
 
-    def test_dir_exists(self, memory_with_files):
+    def test_existing_dir_is_not_disclosed(self, memory_with_files):
         entities = os.path.join(memory_with_files, "entities")
-        assert check_if_dir_exists(entities) is True
+        assert check_if_dir_exists(entities) is False
 
     def test_dir_not_exists(self, temp_memory_dir):
         assert check_if_dir_exists(os.path.join(temp_memory_dir, "nope")) is False
@@ -197,24 +211,24 @@ class TestExistenceChecks:
 
 
 class TestGoToLink:
-    def test_follows_obsidian_link(self, memory_with_files):
-        # The cwd is set to temp_memory_dir by the fixture
+    def test_denies_obsidian_link_without_returning_content(self, memory_with_files):
         content = go_to_link("[[entities/alice]]")
-        assert "Alice" in content
-        assert "Acme Corp" in content
+        assert "unavailable" in content.lower()
+        assert "Alice" not in content
+        assert "Acme Corp" not in content
 
-    def test_follows_obsidian_link_with_md_extension(self, memory_with_files):
+    def test_denies_obsidian_link_with_md_extension(self, memory_with_files):
         content = go_to_link("[[entities/alice.md]]")
-        assert "Alice" in content
+        assert "unavailable" in content.lower()
 
-    def test_returns_error_for_missing_link(self, temp_memory_dir):
+    def test_returns_same_denial_for_missing_link(self, temp_memory_dir):
         result = go_to_link("[[entities/nobody]]")
-        assert result.startswith("Error")
+        assert "unavailable" in result.lower()
 
-    def test_follows_plain_path(self, memory_with_files):
+    def test_denies_plain_path(self, memory_with_files):
         path = os.path.join(memory_with_files, "user.md")
         content = go_to_link(path)
-        assert "Test User" in content
+        assert "unavailable" in content.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -223,21 +237,21 @@ class TestGoToLink:
 
 
 class TestGetSize:
-    def test_file_size(self, temp_memory_dir):
+    def test_file_size_is_not_disclosed(self, temp_memory_dir):
         path = os.path.join(temp_memory_dir, "note.md")
         content = "Hello, world!"
         create_file(path, content)
-        size = get_size(path)
-        assert size == len(content.encode())
+        with pytest.raises(PermissionError, match="unavailable"):
+            get_size(path)
 
-    def test_directory_size_is_sum_of_files(self, temp_memory_dir):
+    def test_directory_size_is_not_disclosed(self, temp_memory_dir):
         create_file(os.path.join(temp_memory_dir, "a.md"), "aaa")
         create_file(os.path.join(temp_memory_dir, "b.md"), "bbbb")
-        size = get_size(temp_memory_dir)
-        assert size >= 7  # at least 3 + 4 bytes
+        with pytest.raises(PermissionError, match="unavailable"):
+            get_size(temp_memory_dir)
 
-    def test_raises_for_nonexistent_path(self, temp_memory_dir):
-        with pytest.raises(FileNotFoundError):
+    def test_nonexistent_path_has_same_denial(self, temp_memory_dir):
+        with pytest.raises(PermissionError, match="unavailable"):
             get_size(os.path.join(temp_memory_dir, "ghost.md"))
 
 
@@ -247,15 +261,13 @@ class TestGetSize:
 
 
 class TestListFiles:
-    def test_shows_files_in_tree(self, memory_with_files):
-        # cwd is set to memory_with_files by conftest
+    def test_does_not_list_existing_files(self, memory_with_files):
         result = list_files()
-        assert "user.md" in result
-        assert "entities" in result
-        assert "alice.md" in result
+        assert "unavailable" in result.lower()
+        assert "user.md" not in result
+        assert "entities" not in result
+        assert "alice.md" not in result
 
-    def test_empty_directory(self, temp_memory_dir):
+    def test_empty_directory_has_same_denial(self, temp_memory_dir):
         result = list_files()
-        assert isinstance(result, str)
-        # Should not crash; may return just the root line
-        assert "./" in result
+        assert "unavailable" in result.lower()

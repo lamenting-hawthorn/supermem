@@ -1,7 +1,7 @@
 """PrivacyFilter — strips <private>...</private> blocks from content.
 
-Content inside <private> tags is NEVER written to SQLite, Kuzu, or Chroma.
-It is visible only to the agent during its navigation pass.
+Content inside <private> tags is NEVER written to SQLite, Kuzu, or Chroma and
+is removed from ordinary vault reads exposed to the restricted local executor.
 
 Apache 2.0 — original implementation.
 """
@@ -49,6 +49,33 @@ class PrivacyFilter:
     def has_private(text: str) -> bool:
         """Return True if text contains any <private> blocks."""
         return bool(_PRIVATE_TAG_RE.search(text))
+
+    @staticmethod
+    def strip_preserving_public_bytes(text: str) -> str:
+        """Remove private blocks without rewriting adjacent public bytes.
+
+        Navigation callers use this variant when returning imported vault content:
+        private content and tags are removed, while known-public prefixes and
+        suffixes remain byte-for-byte unchanged.  An unclosed opener or stray
+        closer leaves only the already-known public prefix.
+        """
+        parts: list[str] = []
+        cursor = 0
+        depth = 0
+        for match in _PRIVATE_TAG_RE.finditer(text):
+            if depth == 0:
+                parts.append(text[cursor : match.start()])
+            tag = match.group(0).lower()
+            if tag.startswith("</"):
+                if depth == 0:
+                    return "".join(parts)
+                depth -= 1
+            else:
+                depth += 1
+            cursor = match.end()
+        if depth == 0:
+            parts.append(text[cursor:])
+        return "".join(parts)
 
     @staticmethod
     def redact(text: str, replacement: str = "[PRIVATE]") -> str:

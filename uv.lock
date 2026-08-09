@@ -4464,7 +4464,6 @@ all = [
     { name = "fastapi" },
     { name = "huggingface-hub" },
     { name = "sentence-transformers" },
-    { name = "sse-starlette" },
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "vllm", marker = "sys_platform != 'darwin'" },
@@ -4483,7 +4482,6 @@ vector = [
 ]
 worker = [
     { name = "fastapi" },
-    { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -4515,7 +4513,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "sentence-transformers", marker = "extra == 'vector'", specifier = ">=3.0.0" },
-    { name = "sse-starlette", marker = "extra == 'worker'", specifier = ">=2.0.0" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "supermem", extras = ["claude"], marker = "extra == 'all'" },
     { name = "supermem", extras = ["local"], marker = "extra == 'all'" },

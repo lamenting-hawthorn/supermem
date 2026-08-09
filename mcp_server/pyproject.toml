@@ -1,7 +1,7 @@
 [project]
 name = "mcp-server"
 version = "0.1.0"
-description = "Mock FastMCP server exposing minimal tools that leverage the agent package"
+description = "FastMCP server exposing lifecycle-aware SuperMem tools over trusted stdio or authenticated loopback HTTP"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
@@ -10,7 +10,6 @@ dependencies = [
     "pygments>=2.19.2",
     "fastapi",
     "uvicorn",
-    "sse-starlette",
 ]
 
 [build-system]
@@ -27,5 +26,3 @@ dev = [
 
 [tool.uv.sources]
 agent = { workspace = true }
-
-

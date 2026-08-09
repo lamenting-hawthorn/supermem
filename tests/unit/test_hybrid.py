@@ -118,3 +118,14 @@ async def test_retracted_observations_filtered_from_search(
 
     result = await retriever.search("Bluebird", tier_limit=1)
     assert oid not in result.obs_ids
+
+
+@pytest.mark.asyncio
+async def test_tier_four_request_is_capped_without_agent_fallback(
+    retriever: HybridRetriever,
+) -> None:
+    result = await retriever.search("no-tier-four-canary", tier_limit=4)
+
+    assert not hasattr(retriever, "_agent")
+    assert result.obs_ids == []
+    assert result.source_tier != 4
