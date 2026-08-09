@@ -279,6 +279,7 @@ Next steps: ship v2 by June.
 Additional safeguards:
 
 - Backup restore rejects archive members that would escape the configured vault.
+- Notion/Nuclino ZIP imports bound member count, central-directory size, compression ratio, total extraction, parsed Markdown/CSV size, and attachment size separately.
 - MCP tools share one auth/rate-limit guard and one per-client rate bucket.
 - The Python executor blocks denied imports (including direct platform raw-I/O modules), scrubs inherited environment variables, and wraps common filesystem APIs; it is still a restricted local executor, **not** a substitute for container/OS isolation for hostile code.
 - Keep current HTTP surfaces off untrusted networks. OAuth identities, scopes, installed-artifact E2E, staging, and remote-production proof remain future work; see [`SECURITY.md`](SECURITY.md).

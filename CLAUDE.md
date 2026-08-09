@@ -157,7 +157,7 @@ in page memory, and clears it on refresh; it never stores the key in a URL,
 ## Environment
 
 - **Python**: 3.11 (exact, enforced in pyproject.toml)
-- **Config files**: `.memory_path` (memory dir), `.mlx_model_name` (model), `.filters` (privacy rules)
+- **Config files**: `.memory_path` (memory dir), `.mlx_model_name` (model), `.filters` (legacy Agent prompt guidance; never embedded in lifecycle-aware FTS queries)
 - **Env vars**: see `.env.example` — OPENROUTER_API_KEY, VLLM_HOST/PORT, LOG_LEVEL, MCP_TRANSPORT; v2 adds SUPERMEM_VAULT_PATH, SUPERMEM_DB_PATH, SUPERMEM_WORKER_PORT (default 37777), SUPERMEM_API_KEY
 - **Remotes**: `origin` = fork (`lamenting-hawthorn/supermem`), `upstream` = `firstbatchxyz/mem-agent-mcp`
 - **Docker**: `docker-compose.yml` + `Dockerfile` available for containerized deployment

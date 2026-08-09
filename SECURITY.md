@@ -24,12 +24,16 @@ unless additional production controls are added.
   `Agent.chat` fails closed before it can invoke a model, tool, or executor.
 - **Restore containment:** archive restore validates paths before writing into
   the vault and rejects absolute or traversal paths.
+- **Connector archive bounds:** Notion/Nuclino imports retain the 1 MiB parsed
+  Markdown/CSV ceiling while allowing attachments only within the 100 MiB
+  per-member and total-extraction ceilings; count, type, path, ratio, and
+  central-directory checks remain fail closed.
 - **MCP auth/rate guard:** primary MCP tools share the same auth guard and one
   per-client rate bucket.
 - **Bounded local HTTP profile:** primary MCP HTTP binds only to loopback,
   authenticates before protocol handling, and is stateless, so initialize
   requests do not create retained MCP transport sessions. Worker observation
-  listing returns active rows only.
+  listing and session observation counts return active rows only.
 - **Retired transport boundary:** legacy HTTP/SSE adapters return their disabled
   response without reading or parsing request bodies.
 - **Restricted executor hardening:** the retained internal utility uses an

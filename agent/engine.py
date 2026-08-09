@@ -242,19 +242,6 @@ def _run_user_code(
 
             os.remove = secure_remove
 
-            def secure_rename(src, dst, *args, **kwargs):
-                full_src = os.path.abspath(src)
-                full_dst = os.path.abspath(dst)
-                if not _is_within_path(full_src, allowed) or not _is_within_path(
-                    full_dst, allowed
-                ):
-                    raise PermissionError(
-                        "Rename operation outside allowed path is denied by restricted executor."
-                    )
-                return orig_rename(src, dst, *args, **kwargs)
-
-            os.rename = secure_rename
-
             def _contained_path(path) -> str:
                 full_path = os.path.abspath(os.fspath(path))
                 if not _is_within_path(full_path, allowed):
@@ -293,6 +280,14 @@ def _run_user_code(
 
             def _rename_like_wrapper(original):
                 def wrapped(src, dst, *args, **kwargs):
+                    if any(
+                        name.endswith("dir_fd") and value is not None
+                        for name, value in kwargs.items()
+                    ):
+                        raise PermissionError(
+                            "dir_fd based rename/link operations are denied by "
+                            "restricted executor."
+                        )
                     source_path = _contained_path(src)
                     destination_path = _contained_path(dst)
                     if os.path.isdir(source_path) or os.path.isdir(destination_path):
@@ -331,7 +326,7 @@ def _run_user_code(
                 "removedirs",
             ):
                 _patch_os_path_function(function_name, _single_path_wrapper)
-            for function_name in ("replace", "link", "symlink"):
+            for function_name in ("rename", "replace", "link", "symlink"):
                 _patch_os_path_function(function_name, _rename_like_wrapper)
             _patch_os_path_function("walk", _walk_wrapper)
 

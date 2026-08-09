@@ -159,7 +159,9 @@ async def list_sessions(
         for row in rows:
             sid = row[0]
             async with _db._conn.execute(  # type: ignore[union-attr]
-                "SELECT COUNT(*) FROM observations WHERE session_id = ?", (sid,)
+                "SELECT COUNT(*) FROM observations "
+                "WHERE session_id = ? AND status = 'active'",
+                (sid,),
             ) as cur2:
                 obs_count = (await cur2.fetchone())[0]
             sessions.append(

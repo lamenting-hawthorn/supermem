@@ -360,6 +360,35 @@ class TestPathRestriction:
         assert (allowed / "private-source.tmp").read_text() == "replacement"
         assert (allowed / "public.md").read_text() == "new public"
 
+    def test_path_rename_preserves_private_destination_and_public_control(
+        self, tmp_path
+    ):
+        allowed = tmp_path / "memory"
+        allowed.mkdir()
+        private_note = allowed / "private.md"
+        private_before = b"public <private>rename-canary</private>"
+        private_note.write_bytes(private_before)
+        (allowed / "private-source.tmp").write_text("replacement")
+        (allowed / "public.md").write_text("old public")
+        (allowed / "public-source.tmp").write_text("new public")
+        code = (
+            "from pathlib import Path\n"
+            "try:\n"
+            "    Path('private-source.tmp').rename('private.md')\n"
+            "    private_renamed = True\n"
+            "except PermissionError:\n"
+            "    private_renamed = False\n"
+            "Path('public-source.tmp').rename('public.md')\n"
+        )
+
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+
+        assert not error
+        assert locals_dict["private_renamed"] is False
+        assert private_note.read_bytes() == private_before
+        assert (allowed / "private-source.tmp").read_text() == "replacement"
+        assert (allowed / "public.md").read_text() == "new public"
+
 
 # Must be defined at module level — pickle cannot serialize local functions
 def _add(a, b):

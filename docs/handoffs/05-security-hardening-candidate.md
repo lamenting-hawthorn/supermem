@@ -2,15 +2,16 @@
 
 ## Status
 
-**PR #15 IS OPEN; HOSTED CI PASSED AT `03193f5`. SIX REVIEW-CORRECTION
-REGRESSIONS NOW PASS LOCALLY BUT REMAIN UNCOMMITTED AND UNPUSHED. THE CANDIDATE
-IS NOT MERGE-APPROVED AND HAS NO RELEASE CLAIM.**
+**PR #15 IS OPEN. HOSTED CI PASSED AT `99d4c51`. FIVE NEW REVIEW-CORRECTION
+BOUNDARIES ARE REMEDIATED IN THE CORRECTION CONTAINING THIS RECEIPT; THE EXACT
+COMMIT'S HOSTED CI AND THREAD STATE REMAIN AUTHORITATIVE IN PR #15. THE
+CANDIDATE IS NOT MERGE-APPROVED AND HAS NO RELEASE CLAIM.**
 
 This is the isolated hardening branch `codex/supermem-security-hardening`, based
 on BM-0 commit `a101015eb4cb3de558dd635a5eaecca09d292fac`. PR #15 contains the
 BM-0 parent, the hardening commit `90c19df`, and the standard-checkout CI fix
-`03193f5`. No merge, deployment, publication, or primary-checkout change has
-been performed.
+`03193f5`, followed by the first review correction `99d4c51`. No merge,
+deployment, publication, or primary-checkout change has been performed.
 
 The initial change-aware scan sealed five validated regressions in this dirty
 candidate: pre-session primary-HTTP auth, primary HTTP loopback binding,
@@ -549,8 +550,75 @@ and byte-identical cases SHA-256
 - `/private/tmp/supermem-bm0-pr15-review-b.XXXXXX.Tftr1s0hov/bm0-20260809T153232700881Z-ed4faf36af00`
 
 These are static, unit, local integration/process, and local SQLite/FTS proof
-only. Review replies, thread resolution, commit, and push remain separately
-authorized actions.
+only. Commit `99d4c51` subsequently passed GitHub Actions run `31322074960`:
+lint/type/test, package build, and Docker build all succeeded. The five inline
+threads were answered and resolved, and the review-body `Path.replace` P1 was
+answered in a separate PR summary comment.
+
+## Second PR review corrections
+
+Codex review on `99d4c51` reported five additional P2 boundaries. The eventual
+regression set was executed before product edits and produced eight failures:
+`Path.rename` destroyed a private-bearing destination; retracting after source
+deletion changed canonical state and appended an invalid event; free-form
+`.filters` markup caused FTS5 syntax failure; both connector parsers rejected a
+bounded attachment just over the parsed-Markdown limit; and Worker session
+counts included a row hidden by active-only observation listing. Six failures
+were the parameterized finding reproductions. Two additional parsed-text
+controls failed only because their first draft over-specified the new error
+wording; the controls were corrected to assert the existing denial behavior.
+
+The containing correction now:
+
+- routes `rename` through the same contained source/destination private-file
+  guard as replace/link operations and rejects descriptor-relative variants;
+- treats retraction of an already deleted memory as an idempotent no-op,
+  preserving both `deleted` state and append-only event order;
+- never embeds legacy free-form Agent prompt guidance from `.filters` in a raw
+  FTS query;
+- retains a 1 MiB parsed Markdown/CSV member ceiling while allowing ordinary
+  attachments only inside the existing 100 MiB per-member and total extraction
+  ceilings, with ratio/count/path/type/central-directory/stream checks intact;
+  and
+- applies the same `status = 'active'` predicate to Worker session counts and
+  observation listings.
+
+Exact local Python 3.11 evidence:
+
+```text
+Boundary-first regression set before product edits:
+6 finding failures; 2 draft control assertions failed on error wording;
+4 existing deprecation warnings.
+
+Same regression set after product edits:
+8 passed, 4 existing deprecation warnings.
+
+Affected engine/BM-0/MCP/archive/Worker suite:
+179 passed, 4 existing deprecation warnings.
+
+Full suite with coverage:
+360 passed, 2 skipped, 4 existing deprecation warnings;
+67.54% coverage and the 60% gate passed.
+
+Ruff 0.15.12 CI scope and changed surfaces: passed.
+Black --target-version py311 --check .: 108 files unchanged.
+mypy 1.20.2 canonical supermem/ and changed runtime surfaces: passed.
+git diff --check: passed.
+```
+
+Two fresh-root BM-0 runs each passed 12/12 with normalized digest
+`ed4faf36af0092bcc0697d8c70391f98b9d5350c855d8cc7cdfbb1081998f289`
+and byte-identical cases SHA-256
+`6fe1fabc30d294d3ae2998240913bbe4d9cc8482bbd2908e1877952cd40fc8d8`:
+
+- `/private/tmp/supermem-bm0-pr15-comments-a.hMoLI5/bm0-20260809T161404769926Z-ed4faf36af00`
+- `/private/tmp/supermem-bm0-pr15-comments-b.3IbEwp/bm0-20260809T161404770251Z-ed4faf36af00`
+
+These results are static, unit, local integration/simulator, and local BM-0
+SQLite/FTS proof only. They do not prove installed, staging, remote-production,
+production, or hostile-code isolation behavior. The exact commit containing
+this section still requires terminal hosted CI before review threads may be
+resolved.
 
 ## Residuals and required next action
 
@@ -568,6 +636,7 @@ authorized actions.
 
 No new formal security scan or independent veto review was requested or run in
 this latest phase. Before candidate acceptance or release, that omitted gate
-remains explicit unless the user changes the release policy. The current review
-correction is local and uncommitted; no reply, thread resolution, push, merge,
-deployment, or publication is authorized by this receipt.
+remains explicit unless the user changes the release policy. At receipt
+authoring, the second review correction still required commit, push, terminal
+hosted CI, replies, and exact-thread resolution. This receipt alone authorizes
+no merge, deployment, or publication.

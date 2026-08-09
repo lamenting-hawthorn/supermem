@@ -33,6 +33,7 @@ from memory_connectors.notion.parser import NotionParser
 from memory_connectors.nuclino.parser import NuclinoParser
 from supermem.core.retriever import RetrievalResult
 from supermem.local_cited_memory import LocalCitedMemory, RetrievalQueryV1
+from supermem.retrieval.hybrid import HybridRetriever
 from supermem.storage.database import DatabaseManager
 import worker.app as worker_app
 
@@ -93,6 +94,10 @@ class _WorkerRetriever:
 
     async def get_observations(self, obs_ids: list[int]) -> list[dict[str, object]]:
         return [{"id": 1, "content": "public fact", "type": "note"}]
+
+
+class _UnavailableGraph:
+    available = False
 
 
 @pytest.fixture(autouse=True)
@@ -378,8 +383,13 @@ async def test_worker_observation_listing_excludes_retracted_rows(
 ) -> None:
     database = DatabaseManager(tmp_path / "worker.sqlite")
     await database.init()
-    active_id = await database.write_observation("active-control")
-    retract_id = await database.write_observation("retracted-canary")
+    session_id = await database.create_session("active-count-control")
+    active_id = await database.write_observation(
+        "active-control", session_id=session_id
+    )
+    retract_id = await database.write_observation(
+        "retracted-canary", session_id=session_id
+    )
     monkeypatch.setattr(worker_app, "_db", database)
     monkeypatch.setattr(worker_app, "_chroma", None)
     monkeypatch.setattr(worker_app, "SUPERMEM_API_KEY", "configured-secret")
@@ -407,8 +417,36 @@ async def test_worker_observation_listing_excludes_retracted_rows(
             assert after.status_code == 200
             assert {row["id"] for row in after.json()} == {active_id}
             assert "retracted-canary" not in after.text
+            sessions = await client.get("/sessions", headers=auth)
+            assert sessions.status_code == 200
+            session = next(row for row in sessions.json() if row["id"] == session_id)
+            assert session["obs_count"] == 1
     finally:
         await database.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_filter_text_is_not_embedded_in_fts_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = DatabaseManager(tmp_path / "filters.sqlite")
+    await database.init()
+    await database.write_observation("filtered canary fact")
+    retriever = HybridRetriever(db=database, graph=_UnavailableGraph(), chroma=None)
+    filters_path = tmp_path / ".filters"
+    filters_path.write_text("type:meeting")
+    monkeypatch.setattr(primary_mcp, "FILTERS_PATH", str(filters_path))
+    monkeypatch.setattr(primary_mcp._ctx, "retriever", retriever)
+    monkeypatch.setattr(primary_mcp._ctx, "capture", None)
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+
+    try:
+        with _active_server_context(None) as ctx:
+            result = await primary_mcp.use_memory_agent.fn("filtered canary", ctx)
+    finally:
+        await database.close()
+
+    assert "filtered canary fact" in result
 
 
 @pytest.mark.asyncio
@@ -688,6 +726,38 @@ def test_connector_parser_rejects_oversized_high_ratio_zip(
     _write_zip(archive, "Export/blob.bin", b"0" * (2 * 1024 * 1024))
 
     with pytest.raises(ValueError, match="archive"):
+        parser.parse_export(str(archive))
+
+
+@pytest.mark.parametrize(
+    ("parser", "result_count"),
+    [
+        (NotionParser(), lambda result: result.total_pages),
+        (NuclinoParser(), lambda result: result.total_items),
+    ],
+)
+def test_connector_parser_accepts_bounded_attachment_above_markdown_limit(
+    tmp_path: Path, parser: object, result_count
+) -> None:
+    archive = tmp_path / "attachment-export.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as writer:
+        writer.writestr("Export/Page.md", b"# Public page\nOrdinary content")
+        writer.writestr("Export/attachments/document.pdf", b"x" * (1024 * 1024 + 1))
+
+    result = parser.parse_export(str(archive))
+
+    assert result_count(result) == 1
+
+
+@pytest.mark.parametrize("parser", [NotionParser(), NuclinoParser()])
+def test_connector_parser_keeps_parsed_text_member_limit(
+    tmp_path: Path, parser: object
+) -> None:
+    archive = tmp_path / "oversized-markdown.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as writer:
+        writer.writestr("Export/Page.md", b"x" * (1024 * 1024 + 1))
+
+    with pytest.raises(ValueError, match="member exceeds"):
         parser.parse_export(str(archive))
 
 

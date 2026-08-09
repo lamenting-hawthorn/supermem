@@ -318,9 +318,9 @@ async def use_memory_agent(question: str, ctx: Context) -> str:
     if denial:
         return denial
 
-    # Apply legacy filters
-    filters = _read_filters()
-    query = question + (f"\n\n<filter>{filters}</filter>" if filters else "")
+    # Legacy .filters entries were free-form Agent prompt guidance, not a
+    # structured retrieval predicate. Never splice their markup into FTS.
+    query = question
 
     try:
         # ── Supported path: lifecycle-aware HybridRetriever tiers 1-3 ───────

@@ -155,6 +155,26 @@ def test_delete_retract_expiry_and_effective_bounds_are_live(
     assert store.compression_enabled is False
 
 
+def test_retract_after_source_delete_is_an_idempotent_noop(
+    store: LocalCitedMemory,
+) -> None:
+    revision = store.ingest_markdown(
+        "memory://tests/delete-then-retract.md", "deleted-state-cinder"
+    )
+    memory_id = f"{revision.source_id}:{revision.revision}"
+
+    assert store.delete_source(revision.source_uri)
+    events_before = store.source_events(revision.source_id)
+    assert store.retract(memory_id)
+
+    state = store._conn.execute(
+        "SELECT lifecycle_state FROM bm0_memory_records WHERE memory_id = ?",
+        (memory_id,),
+    ).fetchone()[0]
+    assert state == "deleted"
+    assert store.source_events(revision.source_id) == events_before
+
+
 def test_private_nested_and_unclosed_blocks_never_persist(
     store: LocalCitedMemory,
 ) -> None:

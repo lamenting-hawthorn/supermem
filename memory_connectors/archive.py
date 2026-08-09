@@ -17,7 +17,8 @@ class ArchiveLimits:
     """Resource ceilings applied before and during ZIP extraction."""
 
     max_members: int = 10_000
-    max_member_bytes: int = SUPERMEM_FILE_SIZE_LIMIT
+    max_member_bytes: int = SUPERMEM_MEMORY_SIZE_LIMIT
+    max_parsed_text_bytes: int = SUPERMEM_FILE_SIZE_LIMIT
     max_total_bytes: int = SUPERMEM_MEMORY_SIZE_LIMIT
     max_central_directory_bytes: int = 8 * 1024 * 1024
     max_compression_ratio: float = 200.0
@@ -30,6 +31,7 @@ _EOCD_RECORD = struct.Struct("<4s4H2LH")
 _CENTRAL_DIRECTORY_RECORD = struct.Struct("<4s6H3L5H2L")
 _ZIP64_MEMBER_COUNT = 0xFFFF
 _ZIP64_FIELD = 0xFFFFFFFF
+_PARSED_TEXT_SUFFIXES = frozenset({".csv", ".markdown", ".md"})
 
 
 def _safe_relative_path(filename: str) -> Path:
@@ -43,6 +45,16 @@ def _safe_relative_path(filename: str) -> Path:
     ):
         raise ValueError(f"archive member has unsafe path: {filename!r}")
     return Path(*member.parts)
+
+
+def _member_byte_limit(filename: str, limits: ArchiveLimits) -> tuple[int, str]:
+    """Keep parsed text small while allowing bounded connector attachments."""
+    if (
+        PurePosixPath(filename.replace("\\", "/")).suffix.lower()
+        in _PARSED_TEXT_SUFFIXES
+    ):
+        return min(limits.max_member_bytes, limits.max_parsed_text_bytes), "parsed text"
+    return limits.max_member_bytes, "archive"
 
 
 def _find_eocd(tail: bytes, archive_name: str) -> tuple[int, tuple[int, ...]]:
@@ -276,9 +288,10 @@ def safe_extract_zip(
             raise ValueError(f"archive member is not a regular file: {info.filename!r}")
         if info.flag_bits & 0x1:
             raise ValueError(f"archive member is encrypted: {info.filename!r}")
-        if info.file_size > limits.max_member_bytes:
+        member_limit, member_kind = _member_byte_limit(info.filename, limits)
+        if info.file_size > member_limit:
             raise ValueError(
-                f"archive member exceeds {limits.max_member_bytes} bytes: "
+                f"{member_kind} member exceeds {member_limit} bytes: "
                 f"{info.filename!r}"
             )
         total_declared += info.file_size
@@ -312,14 +325,16 @@ def safe_extract_zip(
 
         target.parent.mkdir(parents=True, exist_ok=True)
         member_written = 0
+        member_limit, member_kind = _member_byte_limit(info.filename, limits)
         try:
             with archive.open(info, "r") as source, target.open("xb") as output:
                 while chunk := source.read(_COPY_CHUNK_BYTES):
                     member_written += len(chunk)
                     total_written += len(chunk)
-                    if member_written > limits.max_member_bytes:
+                    if member_written > member_limit:
                         raise ValueError(
-                            f"archive member exceeded extraction limit: {info.filename!r}"
+                            f"{member_kind} member exceeded extraction limit: "
+                            f"{info.filename!r}"
                         )
                     if total_written > limits.max_total_bytes:
                         raise ValueError("archive exceeded total extraction limit")

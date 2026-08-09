@@ -602,7 +602,7 @@ class LocalCitedMemory:
             if row is None:
                 self._conn.rollback()
                 return False
-            if row["lifecycle_state"] == "retracted":
+            if row["lifecycle_state"] in {"retracted", "deleted"}:
                 self._conn.rollback()
                 return True
             self._append_event(
