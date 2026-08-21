@@ -100,6 +100,17 @@ def test_incremental_update(graph: KuzuGraphManager) -> None:
     assert "carol" in result
 
 
+def test_remove_entity_detaches_node(graph: KuzuGraphManager) -> None:
+    if not graph.available:
+        pytest.skip("kuzu not installed")
+    graph.upsert_entity("alice", "/vault/alice.md")
+    graph.upsert_entity("bob", "/vault/bob.md")
+    graph.add_edge("alice", "bob", anchor="link")
+    graph.remove_entity("alice")
+    result = graph.expand(["alice"], hops=1)
+    assert "bob" not in result
+
+
 def test_unavailable_gracefully_returns_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -113,5 +124,6 @@ def test_unavailable_gracefully_returns_empty(
     # These should all be silent no-ops
     g.upsert_entity("x", "/x.md")
     g.add_edge("x", "y", anchor="link")
+    g.remove_entity("x")
     result = g.expand(["x"], hops=2)
     assert result == []

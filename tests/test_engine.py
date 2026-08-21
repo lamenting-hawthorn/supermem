@@ -570,3 +570,84 @@ def test_allow_installs_keeps_install_runner_when_subprocess_blacklisted(monkeyp
     assert error is None
     assert locals_dict["installed"] is True
     sys.modules.pop(module_name, None)
+
+
+class TestSandboxBypassVectors:
+    """Regression tests for the import-hook bypass vectors closed by P0-1."""
+
+    def test_importlib_import_module_bypass_is_denied(self):
+        # importlib.import_module used to reach 'os' behind the import hook.
+        code = "import importlib\nm = importlib.import_module('os')"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert locals_dict is not None
+        assert error is not None
+        assert "Import of 'importlib' is denied" in error
+
+    def test_ctypes_is_denied(self):
+        code = "import ctypes"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert locals_dict is not None
+        assert "Import of 'ctypes' is denied" in error
+
+    def test_multiprocessing_is_denied(self):
+        code = "import multiprocessing"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert locals_dict is not None
+        assert "Import of 'multiprocessing' is denied" in error
+
+    def test_pickle_is_denied(self):
+        code = "import pickle"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert locals_dict is not None
+        assert "Import of 'pickle' is denied" in error
+
+    def test_builtins_eval_and_exec_are_removed(self):
+        code = "e = 'eval' in dir(__builtins__)\nx = 'exec' in dir(__builtins__)"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert not error
+        assert locals_dict["e"] is False
+        assert locals_dict["x"] is False
+
+    def test_os_fork_is_blacklisted(self):
+        code = "import os\nfork_val = getattr(os, 'fork', 'missing')"
+        locals_dict, error = execute_sandboxed_code(code)
+        # os.fork is nullified by the blacklist; 'import os' itself is denied,
+        # so this asserts the denial path stays intact rather than allowing
+        # a fork bomb to slip through.
+        assert locals_dict is not None
+        assert "Import of 'os' is denied" in error
+
+    def test_path_object_cannot_escape_containment(self, tmp_path):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        # pathlib.Path.name returns the basename only; the old secure_open used
+        # it for containment, so an absolute Path object escaped. Now the real
+        # path must be checked.
+        code = (
+            "from pathlib import Path\n"
+            "try:\n"
+            f"    with open(Path('{outside}')) as f:\n"
+            "        content = f.read()\n"
+            "    escaped = True\n"
+            "except PermissionError:\n"
+            "    escaped = False\n"
+        )
+        locals_dict, error = execute_sandboxed_code(code, allowed_path=str(allowed))
+        assert not error
+        assert locals_dict.get("escaped") is False
+
+    def test_json_ipc_roundtrip(self):
+        # Results now travel as JSON (not pickle); plain scalars and containers
+        # must round-trip correctly.
+        code = "a = 1\nb = 'x'\nc = [1, 2, 3]\nd = {'k': 'v'}"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert not error
+        assert locals_dict == {"a": 1, "b": "x", "c": [1, 2, 3], "d": {"k": "v"}}
+
+    def test_non_json_locals_fall_back_to_repr(self):
+        code = "obj = object()"
+        locals_dict, error = execute_sandboxed_code(code)
+        assert not error
+        assert isinstance(locals_dict["obj"], str)  # repr fallback

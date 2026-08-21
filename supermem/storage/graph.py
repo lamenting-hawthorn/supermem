@@ -120,6 +120,22 @@ class KuzuGraphManager:
         except Exception as exc:
             log.warning("kuzu_remove_edges_failed", src=src, error=str(exc))
 
+    def remove_entity(self, name: str) -> None:
+        """Delete an entity node and all its LINKS_TO edges (in and out).
+
+        Used when a vault file is deleted — the node and any edges to/from it
+        are removed with DETACH DELETE. No-op when Kuzu is unavailable.
+        """
+        if not self.available:
+            return
+        try:
+            self._conn.execute(
+                "MATCH (e:Entity {name: $name}) DETACH DELETE e",
+                {"name": name},
+            )
+        except Exception as exc:
+            log.warning("kuzu_remove_entity_failed", name=name, error=str(exc))
+
     def incremental_update(
         self,
         entity_name: str,

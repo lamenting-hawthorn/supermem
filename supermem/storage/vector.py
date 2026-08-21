@@ -66,19 +66,47 @@ class ChromaManager:
     def available(self) -> bool:
         return self._chroma is not None and self._collection is not None
 
-    async def upsert_chunks(self, obs_id: int, chunks: list[str]) -> None:
-        """Store text chunks associated with an observation ID."""
+    async def upsert_chunks(
+        self,
+        chunks: list[str],
+        *,
+        obs_id: int | None = None,
+        source_uri: str | None = None,
+    ) -> None:
+        """Store text chunks, tagged with an optional observation ID / source URI.
+
+        Each chunk carries ``{"chunk_index": n}`` plus ``source_uri`` and/or
+        ``obs_id`` when provided, so results can be mapped back to a source
+        and cleaned up on deletion via :meth:`delete_by_source`.
+        """
         if not self.available or not chunks:
             return
         try:
-            ids = [f"obs_{obs_id}_{i}" for i in range(len(chunks))]
-            metadatas = [{"obs_id": obs_id} for _ in chunks]
+            ids: list[str] = []
+            metadatas: list[dict[str, Any]] = []
+            for i, chunk in enumerate(chunks):
+                meta: dict[str, Any] = {"chunk_index": i}
+                if source_uri is not None:
+                    meta["source_uri"] = source_uri
+                if obs_id is not None:
+                    meta["obs_id"] = obs_id
+                key = f"{source_uri or 'chunk'}_{i}"
+                ids.append(key)
+                metadatas.append(meta)
             self._collection.upsert(documents=chunks, ids=ids, metadatas=metadatas)
         except Exception as exc:
-            log.warning("chroma_upsert_failed", obs_id=obs_id, error=str(exc))
+            log.warning(
+                "chroma_upsert_failed",
+                obs_id=obs_id,
+                source_uri=source_uri,
+                error=str(exc),
+            )
 
-    async def search(self, query: str, limit: int = 10) -> list[int]:
-        """Semantic search. Returns observation IDs ranked by cosine similarity."""
+    async def search(self, query: str, limit: int = 10) -> list[tuple[int, float]]:
+        """Semantic search. Returns ``(obs_id, distance)`` ranked by relevance.
+
+        Distance is the cosine distance returned by Chroma (lower = closer).
+        """
         if not self.available:
             return []
         try:
@@ -86,18 +114,40 @@ class ChromaManager:
             results = self._collection.query(
                 query_texts=[query],
                 n_results=n,
-                include=["metadatas"],
+                include=["metadatas", "distances"],
             )
-            obs_ids: list[int] = []
-            for meta_list in results.get("metadatas", []):
-                for meta in meta_list:
+            meta_lists = results.get("metadatas", []) or []
+            dist_lists = results.get("distances", []) or []
+            out: list[tuple[int, float]] = []
+            seen: set[int] = set()
+            for i, meta_list in enumerate(meta_lists):
+                dist_list = (
+                    dist_lists[i] if i < len(dist_lists) else [0.0] * len(meta_list)
+                )
+                for meta, dist in zip(meta_list, dist_list):
                     oid = meta.get("obs_id")
-                    if oid is not None and oid not in obs_ids:
-                        obs_ids.append(int(oid))
-            return obs_ids
+                    if oid is None:
+                        continue
+                    oid = int(oid)
+                    if oid in seen:
+                        continue
+                    seen.add(oid)
+                    out.append((oid, float(dist)))
+            return out
         except Exception as exc:
             log.warning("chroma_search_failed", error=str(exc))
             return []
+
+    async def delete_by_source(self, source_uri: str) -> None:
+        """Remove all vectors whose metadata ``source_uri`` matches."""
+        if not self.available:
+            return
+        try:
+            self._collection.delete(where={"source_uri": source_uri})
+        except Exception as exc:
+            log.warning(
+                "chroma_delete_by_source_failed", source_uri=source_uri, error=str(exc)
+            )
 
     async def delete_obs(self, obs_id: int) -> None:
         if not self.available:

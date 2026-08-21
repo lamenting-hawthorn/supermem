@@ -654,7 +654,10 @@ async def _startup() -> None:
     # ── Non-critical: vault indexer ───────────────────────────────────────────
     try:
         vault = VaultIndexer(
-            db=_ctx.db, graph=_ctx.graph, vault_path=SUPERMEM_VAULT_PATH
+            db=_ctx.db,
+            graph=_ctx.graph,
+            vector=_ctx.chroma,
+            vault_path=SUPERMEM_VAULT_PATH,
         )
         await vault.walk()
         vault.start_watcher()

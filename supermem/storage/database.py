@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS entity_metadata (
 CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
     content,
     obs_id UNINDEXED,
-    tokenize='porter ascii'
+    tokenize='porter unicode61 remove_diacritics 2'
 );
 
 CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
@@ -103,6 +103,7 @@ class DatabaseManager(BaseStorage):
         self._path = db_path or SUPERMEM_DB_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: aiosqlite.Connection | None = None
+        self._last_purge: float = 0.0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -141,7 +142,28 @@ class DatabaseManager(BaseStorage):
         except Exception as exc:
             raise StorageError(f"Failed to initialise database: {exc}") from exc
 
-    async def _purge_expired(self) -> None:
+    @staticmethod
+    def _active_clause(alias: str = "observations") -> str:
+        """WHERE fragment for rows that are both active and not expired."""
+        return (
+            f"{alias}.status = 'active'"
+            f" AND ({alias}.expires_at IS NULL OR {alias}.expires_at > ?)"
+        )
+
+    async def maybe_purge_expired(self, throttle_seconds: int = 300) -> int:
+        """Delete expired observations, at most once per throttle window.
+
+        Unlike the startup-only purge, this is safe to call from any write or
+        retrieval path so a long-running server never returns expired memories.
+        """
+        now = time.time()
+        if now - self._last_purge < throttle_seconds:
+            return 0
+        self._last_purge = now
+        count = await self._purge_expired()
+        return count
+
+    async def _purge_expired(self) -> int:
         """Delete observations whose TTL has elapsed and clean up FTS index."""
         now = time.time()
         conn = await self._ensure_init()
@@ -152,7 +174,7 @@ class DatabaseManager(BaseStorage):
             ) as cur:
                 expired_ids = [row[0] for row in await cur.fetchall()]
             if not expired_ids:
-                return
+                return 0
             placeholders = ",".join("?" * len(expired_ids))
             await conn.execute(
                 f"DELETE FROM observations WHERE id IN ({placeholders})", expired_ids
@@ -162,8 +184,89 @@ class DatabaseManager(BaseStorage):
             )
             await conn.commit()
             log.info("db_purge_expired", count=len(expired_ids))
+            return len(expired_ids)
         except Exception as exc:
             log.warning("db_purge_failed", error=str(exc))
+            return 0
+
+    async def supersede_by_source(
+        self, source_uri: str, *, exclude_id: int | None = None
+    ) -> int:
+        """Mark prior active entity_content observations for a source as superseded.
+
+        A file that changes multiple times should only have ONE current revision
+        in the active set; older revisions are superseded and dropped from FTS so
+        they can never surface as current memory (stale-revision bug, SF-4).
+        Returns the number of rows superseded.
+        """
+        conn = await self._ensure_init()
+        try:
+            await conn.execute("BEGIN")
+            if exclude_id is not None:
+                async with conn.execute(
+                    """SELECT id, session_id FROM observations
+                       WHERE source_id = ? AND type = 'entity_content'
+                         AND status = 'active' AND id != ?""",
+                    (source_uri, exclude_id),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    """SELECT id, session_id FROM observations
+                       WHERE source_id = ? AND type = 'entity_content'
+                         AND status = 'active'""",
+                    (source_uri,),
+                ) as cur:
+                    rows = await cur.fetchall()
+            ids = [r[0] for r in rows]
+            if not ids:
+                await conn.rollback()
+                return 0
+            placeholders = ",".join("?" * len(ids))
+            await conn.execute(
+                f"UPDATE observations SET status = 'superseded' WHERE id IN ({placeholders})",
+                ids,
+            )
+            await conn.execute(
+                f"DELETE FROM content_fts WHERE obs_id IN ({placeholders})", ids
+            )
+            for r in rows:
+                if r[1] is not None:
+                    await conn.execute(
+                        "DELETE FROM summaries WHERE session_id = ?", (r[1],)
+                    )
+            await conn.commit()
+            log.info("db_superseded", source_uri=source_uri, count=len(ids))
+            return len(ids)
+        except Exception as exc:
+            await conn.rollback()
+            raise StorageError(f"supersede_by_source failed: {exc}") from exc
+
+    async def archive_observations(self, obs_ids: list[int]) -> int:
+        """Archive observations without destroying their text.
+
+        Archived rows are excluded from retrieval (status != 'active') but the
+        content is preserved for audit/recovery — unlike hard deletion. This lets
+        the memory compressor summarise without permanently losing source facts.
+        """
+        if not obs_ids:
+            return 0
+        conn = await self._ensure_init()
+        try:
+            await conn.execute("BEGIN")
+            placeholders = ",".join("?" * len(obs_ids))
+            await conn.execute(
+                f"UPDATE observations SET status = 'archived' WHERE id IN ({placeholders})",
+                obs_ids,
+            )
+            await conn.execute(
+                f"DELETE FROM content_fts WHERE obs_id IN ({placeholders})", obs_ids
+            )
+            await conn.commit()
+            return len(obs_ids)
+        except Exception as exc:
+            await conn.rollback()
+            raise StorageError(f"archive_observations failed: {exc}") from exc
 
     async def close(self) -> None:
         if self._conn:
@@ -269,37 +372,41 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         confidence = max(0.0, min(confidence, 1.0))
-        # Dedup only when content and lifecycle/provenance metadata match an active row.
-        async with conn.execute(
-            """SELECT id FROM observations
-               WHERE content_hash = ? AND session_id IS ? AND type = ?
-                 AND source_id IS ? AND source_span IS ? AND observed_at IS ?
-                 AND valid_from IS ? AND valid_until IS ? AND confidence = ?
-                 AND trust_level = ? AND sensitivity = ? AND status = ?""",
-            (
-                content_hash,
-                session_id,
-                obs_type,
-                source_id,
-                source_span,
-                observed_at,
-                valid_from,
-                valid_until,
-                confidence,
-                trust_level,
-                sensitivity,
-                status,
-            ),
-        ) as cur:
-            existing = await cur.fetchone()
-        if existing:
-            log.debug("obs_dedup", content_hash=content_hash[:8])
-            return existing[0]
-        # Set TTL only for regular observations (not entity_content or session_note)
-        expires_at: float | None = None
-        if obs_type == "observation" and SUPERMEM_OBS_TTL_DAYS > 0:
-            expires_at = time.time() + SUPERMEM_OBS_TTL_DAYS * 86400
         try:
+            # BEGIN IMMEDIATE takes the write lock up front so the dedup check
+            # and the insert are atomic — two concurrent writers can no longer
+            # both miss the dedup and create duplicate rows (SF-8).
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                """SELECT id FROM observations
+                   WHERE content_hash = ? AND session_id IS ? AND type = ?
+                     AND source_id IS ? AND source_span IS ? AND observed_at IS ?
+                     AND valid_from IS ? AND valid_until IS ? AND confidence = ?
+                     AND trust_level = ? AND sensitivity = ? AND status = ?""",
+                (
+                    content_hash,
+                    session_id,
+                    obs_type,
+                    source_id,
+                    source_span,
+                    observed_at,
+                    valid_from,
+                    valid_until,
+                    confidence,
+                    trust_level,
+                    sensitivity,
+                    status,
+                ),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing:
+                log.debug("obs_dedup", content_hash=content_hash[:8])
+                await conn.commit()
+                return existing[0]
+            # Set TTL only for regular observations (not entity_content or session_note)
+            expires_at: float | None = None
+            if obs_type == "observation" and SUPERMEM_OBS_TTL_DAYS > 0:
+                expires_at = time.time() + SUPERMEM_OBS_TTL_DAYS * 86400
             async with conn.execute(
                 """INSERT INTO observations
                    (session_id, content, content_hash, tier_used, latency_ms, tool_name,
@@ -335,22 +442,83 @@ class DatabaseManager(BaseStorage):
             await conn.commit()
             return obs_id
         except Exception as exc:
+            await conn.rollback()
             raise StorageError(f"write_observation failed: {exc}") from exc
 
+    @staticmethod
+    def _sanitize_match_query(query: str) -> tuple[str, list[str]]:
+        """Make arbitrary user text safe for FTS5 MATCH.
+
+        Raw queries containing apostrophes, hyphens, or punctuation are treated
+        as FTS5 syntax and raise. Quoting each whitespace-separated term (with
+        embedded quotes doubled) turns them into phrase terms, joined with OR
+        so noisy real-world queries still surface their best document instead
+        of requiring every term to hit. Returns the MATCH expression plus the
+        original terms for downstream coverage scoring.
+        """
+        terms = query.replace('"', '""').split()
+        if not terms:
+            return "", []
+        return " OR ".join(f'"{term}"' for term in terms), terms
+
+    @staticmethod
+    def _fold(text: str) -> str:
+        """Case- and accent-fold text so Python-side matching agrees with the
+        FTS tokenizer's remove_diacritics behavior."""
+        import unicodedata
+
+        return "".join(
+            ch
+            for ch in unicodedata.normalize("NFD", text.lower())
+            if unicodedata.category(ch) != "Mn"
+        )
+
+    @staticmethod
+    def _term_coverage(content: str, terms: list[str]) -> int:
+        """Count how many distinct query terms appear in content."""
+        import re
+
+        doc_tokens = set(re.findall(r"\w+", DatabaseManager._fold(content)))
+        matched = 0
+        for term in terms:
+            term_tokens = re.findall(r"\w+", DatabaseManager._fold(term))
+            if term_tokens and term_tokens[0] in doc_tokens:
+                matched += 1
+        return matched
+
     async def fts_search(self, query: str, limit: int = 20) -> list[int]:
-        """FTS5 keyword search. Returns observation IDs ranked by relevance."""
+        """FTS5 keyword search. Returns observation IDs ranked by relevance.
+
+        Multi-term queries require at least half the terms (min 2) to be
+        present in a candidate before it is returned — pure OR matching lets
+        one coincidental word drag unrelated documents into results, while
+        pure AND makes every noisy real-world query return nothing.
+        """
         conn = await self._ensure_init()
+        match_query, raw_terms = self._sanitize_match_query(query)
+        if not match_query:
+            return []
         try:
+            now = time.time()
             async with conn.execute(
-                """SELECT f.obs_id FROM content_fts f
+                """SELECT f.obs_id, o.content FROM content_fts f
                    JOIN observations o ON o.id = f.obs_id
-                   WHERE content_fts MATCH ? AND o.status = 'active'
+                   WHERE content_fts MATCH ? AND """
+                + self._active_clause("o")
+                + """
                    ORDER BY rank
                    LIMIT ?""",
-                (query, limit),
+                (match_query, now, limit * 3),
             ) as cur:
                 rows = await cur.fetchall()
-            return [row[0] for row in rows]
+            min_coverage = 1 if len(raw_terms) < 2 else max(2, -(-len(raw_terms) // 2))
+            selected: list[int] = []
+            for row in rows:
+                if self._term_coverage(row[1], raw_terms) >= min_coverage:
+                    selected.append(row[0])
+                    if len(selected) >= limit:
+                        break
+            return selected
         except Exception as exc:
             # FTS5 can raise on malformed queries — degrade gracefully
             log.warning("fts_search_failed", error=str(exc), query=query)
@@ -362,9 +530,12 @@ class DatabaseManager(BaseStorage):
             return []
         conn = await self._ensure_init()
         placeholders = ",".join("?" * len(ids))
+        now = time.time()
         async with conn.execute(
-            f"SELECT id FROM observations WHERE id IN ({placeholders}) AND status = 'active'",
-            ids,
+            f"SELECT id FROM observations WHERE id IN ({placeholders}) AND "
+            + self._active_clause()
+            + "",
+            (*ids, now),
         ) as cur:
             rows = await cur.fetchall()
         active = {row[0] for row in rows}
@@ -377,9 +548,12 @@ class DatabaseManager(BaseStorage):
         conn = await self._ensure_init()
         placeholders = ",".join("?" * len(ids))
         try:
+            now = time.time()
             async with conn.execute(
-                f"SELECT * FROM observations WHERE id IN ({placeholders}) AND status = 'active' ORDER BY created_at",
-                ids,
+                f"SELECT * FROM observations WHERE id IN ({placeholders}) AND "
+                + self._active_clause()
+                + " ORDER BY created_at",
+                (*ids, now),
             ) as cur:
                 rows = await cur.fetchall()
             return [dict(row) for row in rows]
@@ -390,27 +564,40 @@ class DatabaseManager(BaseStorage):
         """Return the N observations before and after obs_id, chronologically."""
         conn = await self._ensure_init()
         try:
+            now = time.time()
             async with conn.execute(
-                "SELECT created_at, session_id FROM observations WHERE id = ? AND status = 'active'",
-                (obs_id,),
+                "SELECT created_at, session_id FROM observations WHERE id = ? AND "
+                + self._active_clause()
+                + "",
+                (obs_id, now),
             ) as cur:
                 anchor = await cur.fetchone()
             if not anchor:
                 return []
             ts, sid = anchor[0], anchor[1]
-            before_query = """
+            before_query = (
+                """
                 SELECT * FROM observations
-                WHERE created_at < ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at < ? AND """
+                + self._active_clause()
+                + """ AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at DESC LIMIT ?
             """
-            after_query = """
+            )
+            after_query = (
+                """
                 SELECT * FROM observations
-                WHERE created_at >= ? AND status = 'active' AND (session_id IS ? OR ? IS NULL)
+                WHERE created_at >= ? AND """
+                + self._active_clause()
+                + """ AND (session_id IS ? OR ? IS NULL)
                 ORDER BY created_at ASC LIMIT ?
             """
-            async with conn.execute(before_query, (ts, sid, sid, window)) as cur:
+            )
+            async with conn.execute(before_query, (ts, now, sid, sid, window)) as cur:
                 before = [dict(r) for r in await cur.fetchall()]
-            async with conn.execute(after_query, (ts, sid, sid, window + 1)) as cur:
+            async with conn.execute(
+                after_query, (ts, now, sid, sid, window + 1)
+            ) as cur:
                 after = [dict(r) for r in await cur.fetchall()]
             return list(reversed(before)) + after
         except Exception as exc:
@@ -526,10 +713,13 @@ class DatabaseManager(BaseStorage):
         self, session_id: int, limit: int = 50
     ) -> list[dict]:
         conn = await self._ensure_init()
+        now = time.time()
         async with conn.execute(
-            """SELECT * FROM observations WHERE session_id = ? AND status = 'active'
+            """SELECT * FROM observations WHERE session_id = ? AND """
+            + self._active_clause()
+            + """
                ORDER BY created_at DESC LIMIT ?""",
-            (session_id, limit),
+            (session_id, now, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in reversed(rows)]
@@ -575,11 +765,14 @@ class DatabaseManager(BaseStorage):
         """Return recent observations newest first for local insight tools."""
         conn = await self._ensure_init()
         since = time.time() - max(days, 1) * 86400
+        now = time.time()
         async with conn.execute(
             """SELECT * FROM observations
-               WHERE created_at >= ? AND status = 'active'
+               WHERE created_at >= ? AND """
+            + self._active_clause()
+            + """
                ORDER BY created_at DESC LIMIT ?""",
-            (since, limit),
+            (since, now, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]

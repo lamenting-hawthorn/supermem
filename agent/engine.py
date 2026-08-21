@@ -4,8 +4,10 @@ import importlib
 import importlib._bootstrap_external as _bootstrap_external
 import inspect
 import io
+import json
 import logging
 import os
+import signal
 import sys
 import traceback
 import pickle
@@ -24,6 +26,32 @@ logger.setLevel(logging.INFO)
 DEFAULT_BLACKLIST = [
     "os.system",
     "os.popen",
+    # Process spawning / execution family: prevents fork bombs and escape
+    # hatches that survive the subprocess timeout.
+    "os.fork",
+    "os.forkpty",
+    "os.execv",
+    "os.execve",
+    "os.execvp",
+    "os.execvpe",
+    "os.execl",
+    "os.execle",
+    "os.execlp",
+    "os.execlpe",
+    "os.posix_spawn",
+    "os.posix_spawnp",
+    "os.spawnl",
+    "os.spawnle",
+    "os.spawnlp",
+    "os.spawnlpe",
+    "os.spawnv",
+    "os.spawnve",
+    "os.spawnvp",
+    "os.spawnvpe",
+    # Signal sending could terminate the parent MCP server process.
+    "os.kill",
+    "os.killpg",
+    "os.abort",
     "subprocess.Popen",
     "subprocess.run",
     "subprocess.call",
@@ -45,6 +73,27 @@ DENIED_IMPORT_ROOTS = {
     "urllib",
     "requests",
     "zipimport",
+    # Additional bypass vectors: ctypes/cffi/mmap reach libc directly,
+    # multiprocessing/concurrent spawn workers outside the patched interpreter
+    # state, pty/tty allocate terminals, pickle/shelve/marshal deserializing is
+    # a code-execution vector, code/codeop/compileall/py_compile re-arm exec.
+    "httpx",
+    "ctypes",
+    "cffi",
+    "mmap",
+    "multiprocessing",
+    "concurrent",
+    "pty",
+    "tty",
+    "signal",
+    "resource",
+    "pickle",
+    "shelve",
+    "marshal",
+    "code",
+    "codeop",
+    "compileall",
+    "py_compile",
 }
 _IMPORTLIB_FILE_LOADER_CODES = frozenset(
     {_bootstrap_external.FileLoader.get_data.__code__}
@@ -59,6 +108,24 @@ def _is_within_path(path: str, root: str) -> bool:
         ) == os.path.realpath(root)
     except ValueError:
         return False
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON encoder fallback: carry bytes/bytearray as tagged base64."""
+    import base64 as _b64
+
+    if isinstance(obj, (bytes, bytearray)):
+        return {"__bytes_b64__": _b64.b64encode(bytes(obj)).decode("ascii")}
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _json_object_hook(obj: dict) -> Any:
+    """JSON decoder hook: restore bytes values tagged by _json_default."""
+    import base64 as _b64
+
+    if isinstance(obj, dict) and set(obj) == {"__bytes_b64__"}:
+        return _b64.b64decode(obj["__bytes_b64__"])
+    return obj
 
 
 def _run_user_code(
@@ -425,13 +492,15 @@ def _run_user_code(
         # Clean up any blacklisted or internal entries in locals
         exec_locals.pop("__builtins__", None)
 
-        # Collect only picklable locals for returning
+        # Collect locals into a JSON-safe structure for transport back to the
+        # parent. Using JSON (not pickle) for the *result* closes the RCE
+        # vector where sandbox-controlled bytes could execute in the parent.
         safe_locals: dict[str, Any] = {}
         for var, val in exec_locals.items():
             try:
-                pickle.dumps(val)  # test picklability
+                json.dumps(val, default=_json_default)
                 safe_locals[var] = val
-            except Exception:
+            except (TypeError, ValueError):
                 safe_locals[var] = repr(val)  # fallback: use string representation
 
         if log:
@@ -550,30 +619,55 @@ def execute_sandboxed_code(
     }
 
     env = {
+        # Params travel as pickle because available_functions may contain
+        # callables; this payload is authored by the trusted parent, never by
+        # the untrusted sandbox code, so it is not an attack surface.
         "SANDBOX_PARAMS": base64.b64encode(pickle.dumps(params)).decode(),
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
     }
 
+    def _sandbox_preexec() -> None:
+        # Best-effort CPU hard-limit so runaway user code can't spin forever
+        # even if the wall-clock timeout is missed. Failures are ignored rather
+        # than aborting the spawn (macOS-safe).
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_CPU, (timeout + 5, timeout + 5))
+        except Exception:
+            pass
+
     try:
+        # start_new_session puts the child in its own process group so a
+        # timeout can kill the whole group, not just the direct child.
         result = subprocess.run(
             [sys.executable, "-m", "agent.engine"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
             env=env,
+            start_new_session=True,
+            preexec_fn=_sandbox_preexec,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         logger.error(
             "Restricted code exceeded time limit of %d seconds; terminating.", timeout
         )
+        try:
+            os.killpg(os.getpgid(exc.pid), signal.SIGKILL)
+        except Exception:
+            pass
         return None, f"TimeoutError: Code execution exceeded {timeout} seconds."
 
     if result.returncode != 0:
         return None, result.stderr.decode().strip()
 
     try:
-        local_vars, error_msg = pickle.loads(result.stdout)
+        # Results come back as JSON, never pickle: sandbox-controlled bytes must
+        # not be deserialized in this process (which holds API keys and DBs).
+        payload = json.loads(result.stdout.decode(), object_hook=_json_object_hook)
+        local_vars, error_msg = payload.get("locals"), payload.get("error")
     except Exception as e:
         return None, f"Failed to decode sandbox output: {e}"
 
@@ -597,7 +691,8 @@ def _subprocess_entry() -> None:
         params.get("available_functions", {}),
         params.get("log", False),
     )
-    sys.stdout.buffer.write(pickle.dumps((locals_dict, error)))
+    payload = json.dumps({"locals": locals_dict, "error": error}, default=_json_default)
+    sys.stdout.buffer.write(payload.encode())
 
 
 if __name__ == "__main__":

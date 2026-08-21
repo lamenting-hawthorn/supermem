@@ -1,0 +1,41 @@
+{
+  "name": "bm0-local",
+  "version": "1.0",
+  "description": "BM-0 local fixture corpus: Obsidian-style Markdown entities ingested into a fresh vault, with ordered mutations applied between phase 1 and phase 2 to exercise source revision, deletion, retraction, expiry, and compression gates.",
+  "mutations": [
+    {
+      "type": "modify_file",
+      "payload": {
+        "path": "entities/weather-log.md",
+        "action": "replace",
+        "old_substring": "Berlin office",
+        "new_substring": "London office"
+      }
+    },
+    {
+      "type": "delete_file",
+      "payload": {
+        "path": "entities/old-notes.md"
+      }
+    },
+    {
+      "type": "retract_obs",
+      "payload": {
+        "match_substring": "internship cohort"
+      }
+    },
+    {
+      "type": "expire_obs",
+      "payload": {
+        "match_substring": "parking permit"
+      }
+    },
+    {
+      "type": "archive_obs",
+      "payload": {
+        "match_substring": "Zephyr pipeline architecture",
+        "summary_text": "[compression-summary] Alice's earlier notes covered the Zephyr pipeline architecture."
+      }
+    }
+  ]
+}

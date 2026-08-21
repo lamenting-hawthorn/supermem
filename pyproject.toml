@@ -96,6 +96,7 @@ packages = [
     "agent",
     "mcp_server",
     "memory_connectors",
+    "worker",
 ]
 
 [dependency-groups]

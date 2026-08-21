@@ -106,8 +106,17 @@ SUPERMEM_WORKER_HOST: str = os.getenv("SUPERMEM_WORKER_HOST", "127.0.0.1")
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 
 SUPERMEM_MIN_RESULTS: int = int(os.getenv("SUPERMEM_MIN_RESULTS", "3"))
-SUPERMEM_MAX_RETRIEVAL_TIER: int = 3
+# Tier 4 (LLM agent retrieval) is capped out of the default retrieval ladder;
+# enable explicitly via SUPERMEM_MAX_RETRIEVAL_TIER if ever desired.
+SUPERMEM_MAX_RETRIEVAL_TIER: int = int(os.getenv("SUPERMEM_MAX_RETRIEVAL_TIER", "3"))
 SUPERMEM_DEFAULT_TIER_LIMIT: int = min(
     int(os.getenv("SUPERMEM_DEFAULT_TIER_LIMIT", "3")),
     SUPERMEM_MAX_RETRIEVAL_TIER,
+)
+# Whether Tier 4 (AgentRetriever) persists its unverified reply as an observation.
+# Off by default — agent replies are returned to the caller without being written.
+SUPERMEM_TIER4_PERSIST: bool = os.getenv("SUPERMEM_TIER4_PERSIST", "false").lower() in (
+    "1",
+    "true",
+    "yes",
 )

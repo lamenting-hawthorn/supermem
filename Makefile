@@ -225,3 +225,15 @@ serve-http:
 # Primary loopback MCP HTTP server. Remote production remains unsupported.
 serve-mcp-http:
 	FASTMCP_LOG_LEVEL=INFO MCP_TRANSPORT=http MCP_HOST=127.0.0.1 uv run python -m mcp_server.server
+
+# Competitive multi-adapter benchmark (recall@k / MRR / prohibited-recall / citations)
+bench:
+	uv run python -m benchmarks.compare_runner
+
+# Compare two runs: make bench-compare OLD=artifacts/<run-old> NEW=artifacts/<run-new>
+bench-compare:
+	uv run python -m benchmarks.compare_runner compare $(OLD) $(NEW)
+
+# Frozen BM-0 contract harness (upstream acceptance proof)
+bm0:
+	uv run python -m benchmarks.runner --output-root artifacts/bm0

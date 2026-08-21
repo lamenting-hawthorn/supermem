@@ -46,3 +46,9 @@ mcp.json
 ## start_server.sh
 **/start_server.sh
 .coverage
+
+# benchmark run artifacts (generated, not committed)
+artifacts/
+
+# internal audit docs (security findings) — local only, never pushed
+docs/handoffs/

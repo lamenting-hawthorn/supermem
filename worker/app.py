@@ -330,7 +330,9 @@ async def rebuild_index(_: None = Depends(_require_auth)) -> JSONResponse:
     if not _db or not _graph:
         raise HTTPException(503, "Storage not available")
     try:
-        indexer = VaultIndexer(db=_db, graph=_graph, vault_path=SUPERMEM_VAULT_PATH)
+        indexer = VaultIndexer(
+            db=_db, graph=_graph, vector=_chroma, vault_path=SUPERMEM_VAULT_PATH
+        )
         count = await asyncio.wait_for(indexer.walk(), timeout=300)
         return JSONResponse({"status": "ok", "files_indexed": count})
     except asyncio.TimeoutError:

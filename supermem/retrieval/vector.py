@@ -39,7 +39,8 @@ class VectorRetriever(BaseRetriever):
                 source_tier=self.tier, latency_ms=self._now_ms() - t0
             )
         try:
-            obs_ids = await self._chroma.search(query, limit=limit)
+            results = await self._chroma.search(query, limit=limit)
+            obs_ids = [oid for oid, _dist in results]
             latency = self._now_ms() - t0
             log.debug(
                 "vector_search",

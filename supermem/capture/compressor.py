@@ -39,16 +39,17 @@ class MemoryCompressor:
         self._db = db
         self._model_client = model_client
         self._compress_every = compress_every
-        self._write_count = 0
+        self._session_counts: dict[int, int] = {}
 
     def set_model_client(self, client: "BaseModelClient") -> None:
         """Inject the model client after construction (deferred for startup order)."""
         self._model_client = client
 
     async def maybe_compress(self, session_id: int) -> None:
-        """Increment counter; compress when threshold is reached."""
-        self._write_count += 1
-        if self._write_count % self._compress_every != 0:
+        """Increment per-session counter; compress when threshold is reached."""
+        count = self._session_counts.get(session_id, 0) + 1
+        self._session_counts[session_id] = count
+        if count % self._compress_every != 0:
             return
         if self._model_client is None:
             log.debug("compressor_skipped_no_client")

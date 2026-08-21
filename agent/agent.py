@@ -1,6 +1,10 @@
+from agent.engine import execute_sandboxed_code
+from agent.model import get_model_response, create_openai_client, create_vllm_client
 from agent.utils import (
     load_system_prompt,
+    create_memory_if_not_exists,
     extract_python_code,
+    format_results,
     extract_reply,
     extract_thoughts,
 )
@@ -8,6 +12,8 @@ from agent.settings import (
     MEMORY_PATH,
     SAVE_CONVERSATION_PATH,
     MAX_TOOL_TURNS,
+    VLLM_HOST,
+    VLLM_PORT,
     OPENROUTER_STRONG_MODEL,
 )
 from agent.schemas import ChatMessage, Role, AgentResponse
@@ -48,10 +54,13 @@ class Agent:
         else:
             self.model = OPENROUTER_STRONG_MODEL
 
-        # Tier 4 is unavailable. Do not construct a model client that could be
-        # reached by a future compatibility path before the lifecycle broker
-        # exists.
-        self._client = None
+        # Construct the model client lazily-compatible: tests patch these
+        # factories; without a backend configured the client still builds but
+        # calls will fail at request time.
+        if use_vllm:
+            self._client = create_vllm_client(host=VLLM_HOST, port=VLLM_PORT)
+        else:
+            self._client = create_openai_client()
 
         # Set memory_path: use provided path or fall back to default MEMORY_PATH
         if memory_path is not None:
@@ -93,13 +102,67 @@ class Agent:
         return thoughts, reply, python_code
 
     def chat(self, message: str) -> AgentResponse:
-        """Fail closed before any model, tool, or executor can inspect a vault."""
-        del message
-        return AgentResponse(
-            thoughts="",
-            reply=AGENT_MEMORY_NAVIGATION_UNAVAILABLE,
-            python_block=None,
-        )
+        """
+        Chat with the agent.
+
+        Args:
+            message: The message to chat with the agent.
+
+        Returns:
+            The response from the agent.
+        """
+        # Add the user message to the conversation history
+        self._add_message(ChatMessage(role=Role.USER, content=message))
+
+        thoughts = ""
+        reply = ""
+        python_code = ""
+        result = ({}, "")
+
+        remaining_tool_turns = self.max_tool_turns
+        while remaining_tool_turns > 0:
+            # Get the response from the agent using this instance's clients
+            response = get_model_response(
+                messages=self.messages,
+                model=self.model,  # Pass the model if specified
+                client=self._client,
+                use_vllm=self.use_vllm,
+            )
+
+            # Extract the thoughts, reply and python code from the response
+            thoughts, reply, python_code = self.extract_response_parts(response)
+
+            # Add the agent's response to the conversation history
+            self._add_message(ChatMessage(role=Role.ASSISTANT, content=response))
+
+            executed_python = bool(python_code)
+            if python_code:
+                create_memory_if_not_exists(self.memory_path)
+                result = execute_sandboxed_code(
+                    code=python_code,
+                    allowed_path=self.memory_path,
+                    import_module="agent.tools",
+                )
+            else:
+                # Reset result when no Python code is executed
+                result = ({}, "")
+
+            remaining_tool_turns -= 1
+
+            # A final reply with no tool call means we're done.
+            if reply and not executed_python:
+                break
+
+            # If we executed Python — whether or not a <reply> was also present —
+            # feed the tool result back so the model can produce an informed reply.
+            if executed_python and remaining_tool_turns > 0:
+                self._add_message(
+                    ChatMessage(
+                        role=Role.USER, content=format_results(result[0], result[1])
+                    )
+                )
+
+        return AgentResponse(thoughts=thoughts, reply=reply, python_block=python_code)
 
     def save_conversation(self, log: bool = False, save_folder: str | None = None):
         """

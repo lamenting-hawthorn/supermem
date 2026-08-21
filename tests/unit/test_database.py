@@ -371,3 +371,127 @@ async def test_retract_observation_invalidates_session_summaries(
     ) as cur:
         summary_count = (await cur.fetchone())[0]
     assert summary_count == 0
+
+
+# ── P0 lifecycle: live expiry, supersession, archive ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_expired_observation_excluded_from_retrieval(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("permanent fact", session_id=sid)
+    # Simulate a TTL that has already elapsed.
+    await db._conn.execute(
+        "UPDATE observations SET expires_at = ? WHERE id = ?", (0.0, oid)
+    )
+    await db._conn.commit()
+
+    # Expired rows must not surface via any active-query path.
+    assert await db.fts_search("permanent") == []
+    assert await db.active_obs_ids([oid]) == []
+    assert await db.get_observations([oid]) == []
+    assert await db.get_recent_observations(sid) == []
+    assert await db.get_recent_observations_by_age() == []
+
+
+@pytest.mark.asyncio
+async def test_maybe_purge_expired_deletes(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("gone soon", session_id=sid)
+    await db._conn.execute(
+        "UPDATE observations SET expires_at = ? WHERE id = ?", (0.0, oid)
+    )
+    await db._conn.commit()
+
+    count = await db.maybe_purge_expired(throttle_seconds=0)
+    assert count >= 1
+    obs = await db.get_observations([oid])
+    assert obs == []
+
+
+@pytest.mark.asyncio
+async def test_supersede_by_source_marks_prior_active_rows(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    uri = "vault/entities/alice.md"
+    old = await db.write_observation(
+        "Alice works at Acme",
+        obs_type="entity_content",
+        source_id=uri,
+        status="active",
+    )
+    new = await db.write_observation(
+        "Alice now works at Globex",
+        obs_type="entity_content",
+        source_id=uri,
+        status="active",
+    )
+
+    superseded = await db.supersede_by_source(uri, exclude_id=new)
+    assert superseded == 1
+
+    # Old revision is no longer retrievable; new one still is.
+    assert await db.active_obs_ids([old]) == []
+    assert await db.active_obs_ids([new]) == [new]
+    # FTS must not return the stale revision.
+    assert await db.fts_search("Acme") == []
+    assert await db.fts_search("Globex") == [new]
+
+
+@pytest.mark.asyncio
+async def test_supersede_by_source_invalidates_summaries(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    uri = "vault/entities/alice.md"
+    oid = await db.write_observation(
+        "Old Alice fact",
+        session_id=sid,
+        obs_type="entity_content",
+        source_id=uri,
+        status="active",
+    )
+    await db.write_summary(sid, "Summary referencing old fact", [oid])
+
+    await db.supersede_by_source(uri)
+    async with db._conn.execute(
+        "SELECT COUNT(*) FROM summaries WHERE session_id = ?", (sid,)
+    ) as cur:
+        count = (await cur.fetchone())[0]
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_observations_preserves_text(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("archivable fact", session_id=sid)
+    archived = await db.archive_observations([oid])
+    assert archived == 1
+
+    # Excluded from retrieval but the row (text) still exists for audit.
+    assert await db.active_obs_ids([oid]) == []
+    async with db._conn.execute(
+        "SELECT content, status FROM observations WHERE id = ?", (oid,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row[0] == "archivable fact"
+    assert row[1] == "archived"
+
+
+# ── FTS MATCH sanitization: arbitrary user text must not raise ────────────────
+
+
+@pytest.mark.asyncio
+async def test_fts_search_handles_apostrophes(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("Alice's office is in Berlin", session_id=sid)
+    # Raw apostrophes used to raise "fts5: syntax error" and silently return [].
+    assert await db.fts_search("Alice's office") == [oid]
+
+
+@pytest.mark.asyncio
+async def test_fts_search_handles_quotes_and_punctuation(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation(
+        'the "quoted" project-alpha kickoff e-mail went out', session_id=sid
+    )
+    results = await db.fts_search('project-alpha "quoted" e-mail')
+    assert oid in results
+    assert await db.fts_search("") == []
