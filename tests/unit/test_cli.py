@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 import tarfile
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -15,7 +13,6 @@ import pytest
 
 def _parse(args: list[str]):
     """Parse CLI args without executing any command."""
-    import argparse
     from supermem.__main__ import main
 
     # Capture the parsed namespace by patching dispatch

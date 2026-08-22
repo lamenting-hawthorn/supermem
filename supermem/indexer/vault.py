@@ -193,22 +193,126 @@ class VaultIndexer:
             chunks = self._chunk_text(clean_content)
             if chunks:
                 await self._vector.upsert_chunks(
-                    chunks=chunks, source_uri=entity_name, obs_id=obs_id
+                    chunks=[c["text"] for c in chunks],
+                    source_uri=entity_name,
+                    obs_id=obs_id,
                 )
         except Exception as exc:
             log.warning(
                 "vault_vector_ingest_failed", entity=entity_name, error=str(exc)
             )
 
-    @staticmethod
-    def _chunk_text(text: str, chunk_chars: int = 2000) -> list[str]:
-        """Split text into ~500-token chunks (≈2000 chars) for embedding."""
+    # Sentence-boundary chunking targets (~300 tokens ≈ 1200 chars) with a
+    # small tail overlap between consecutive chunks.
+    CHUNK_TARGET_CHARS = 1200
+    CHUNK_MAX_SENTENCE_CHARS = 2000
+    CHUNK_OVERLAP_CHARS = 120
+
+    @classmethod
+    def _split_sentences(cls, text: str) -> list[tuple[int, int]]:
+        """Split into (start, end) sentence spans on terminators, newlines and
+        markdown headings. Deterministic; offsets are absolute into text."""
+        spans: list[tuple[int, int]] = []
+        start = 0
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            at_heading = ch == "#" and (i == 0 or text[i - 1] == "\n")
+            if at_heading:
+                if i > start:
+                    spans.append((start, i))
+                start = i
+                j = text.find("\n", i)
+                i = n if j == -1 else j + 1
+                spans.append((start, min(i, n)))
+                start = i
+                continue
+            if ch in ".!?" and (i + 1 >= n or text[i + 1] in " \n\t"):
+                j = i + 1
+                while j < n and text[j] in "\"')]}":
+                    j += 1
+                spans.append((start, j))
+                i = j
+                while i < n and text[i] in " \t":
+                    i += 1
+                start = i
+                continue
+            if ch == "\n" and i + 1 < n and text[i + 1] == "\n":
+                if i > start:
+                    spans.append((start, i))
+                start = i + 2
+                i = start
+                continue
+            if ch == "\n":
+                spans.append((start, i))
+                start = i + 1
+                i = start
+                continue
+            i += 1
+        if start < n:
+            spans.append((start, n))
+        return [(s, e) for s, e in spans if text[s:e].strip()]
+
+    @classmethod
+    def _chunk_text(
+        cls,
+        text: str,
+        target_chars: int | None = None,
+    ) -> list[dict]:
+        """Sentence-boundary chunks with absolute offsets for span citations.
+
+        Returns [{"text": str, "start": int, "end": int}]. Consecutive chunks
+        re-include trailing sentences of the previous chunk (~10% overlap) so a
+        sentence near a cut stays retrievable from both sides. Deterministic.
+        """
+        target = target_chars or cls.CHUNK_TARGET_CHARS
         text = text.strip()
         if not text:
             return []
-        if len(text) <= chunk_chars:
-            return [text]
-        return [text[i : i + chunk_chars] for i in range(0, len(text), chunk_chars)]
+        spans = cls._split_sentences(text)
+
+        chunks: list[dict] = []
+        cur: list[tuple[int, int]] = []
+        prev_spans: list[tuple[int, int]] = []
+
+        def flush() -> None:
+            nonlocal cur, prev_spans
+            if not cur:
+                return
+            start, end = cur[0][0], cur[-1][1]
+            chunks.append({"text": text[start:end], "start": start, "end": end})
+            prev_spans = cur
+            cur = []
+
+        for s, e in spans:
+            sent_len = e - s
+            if sent_len > cls.CHUNK_MAX_SENTENCE_CHARS:
+                # Hard-split an oversized single sentence; no overlap here.
+                flush()
+                pos = s
+                while pos < e:
+                    piece_end = min(pos + cls.CHUNK_MAX_SENTENCE_CHARS, e)
+                    chunks.append(
+                        {"text": text[pos:piece_end], "start": pos, "end": piece_end}
+                    )
+                    pos = piece_end
+                continue
+
+            if cur and (cur[-1][1] - cur[0][0]) + sent_len > target:
+                flush()
+                # Re-include trailing sentences of the previous chunk.
+                total = 0
+                for ps, pe in reversed(prev_spans):
+                    if total + (pe - ps) > cls.CHUNK_OVERLAP_CHARS:
+                        break
+                    cur.insert(0, (ps, pe))
+                    total += pe - ps
+
+            cur.append((s, e))
+
+        flush()
+        return chunks
 
     def start_watcher(self) -> None:
         """

@@ -259,3 +259,90 @@ async def test_on_deleted_cleans_vectors(
     await indexer.on_deleted(note)
 
     assert "Heidi" in fake.deleted_sources
+
+
+# ── Sentence-aware chunking (Milestone 1) ─────────────────────────────────────
+
+
+class TestSentenceAwareChunking:
+    def test_chunks_break_at_sentence_boundaries(self):
+        text = "One sentence here. Two sentence there. Three sentence everywhere. Four."
+        chunks = VaultIndexer._chunk_text(text, target_chars=40)
+        assert len(chunks) > 1
+        for c in chunks:
+            body = c["text"].rstrip()
+            # Every chunk (except possibly a final fragment) ends at a boundary.
+            assert body[-1] in ".!? " or len(body) <= 40
+
+    def test_offsets_are_absolute_and_accurate(self):
+        text = (
+            "# Heading\n\nFirst paragraph with several words. Second sentence.\n\n"
+            "Second paragraph follows here. It has two sentences. Done now."
+        )
+        chunks = VaultIndexer._chunk_text(text)
+        for c in chunks:
+            assert text[c["start"] : c["end"]] == c["text"]
+        assert all(c["start"] >= 0 for c in chunks)
+
+    def test_deterministic(self):
+        text = "Alpha sentence. Beta sentence. Gamma sentence. Delta sentence." * 10
+        assert VaultIndexer._chunk_text(text) == VaultIndexer._chunk_text(text)
+
+    def test_long_single_sentence_hard_split(self):
+        text = "word " * 1000  # one giant sentence, no terminators
+        chunks = VaultIndexer._chunk_text(text)
+        assert len(chunks) >= 2
+        assert (
+            max(len(c["text"]) for c in chunks)
+            <= VaultIndexer.CHUNK_MAX_SENTENCE_CHARS + 5
+        )
+        joined = "".join(c["text"] for c in chunks)
+        assert joined == text.strip()  # no content lost (offsets into stripped text)
+
+    def test_overlap_between_consecutive_chunks(self):
+        sentences = " ".join(
+            f"Sentence number {i} talks about topic {i}." for i in range(60)
+        )
+        chunks = VaultIndexer._chunk_text(sentences, target_chars=300)
+        if len(chunks) > 1:
+            # Some tail of chunk N appears inside chunk N+1.
+            overlaps = [
+                c2["start"] < c1["end"]
+                for c1, c2 in zip(chunks, chunks[1:])
+                if c1["end"] - c1["start"] > VaultIndexer.CHUNK_OVERLAP_CHARS
+            ]
+            assert any(overlaps)
+
+    def test_empty_input(self):
+        assert VaultIndexer._chunk_text("") == []
+        assert VaultIndexer._chunk_text("   \n  ") == []
+
+    def test_ingest_vectors_passes_chunk_texts(self):
+        import asyncio
+
+        class FakeVector:
+            available = True
+
+            def __init__(self):
+                self.calls = []
+
+            async def upsert_chunks(self, chunks, source_uri=None, obs_id=None):
+                self.calls.append((chunks, source_uri, obs_id))
+
+        text = (
+            ("Paragraph one about widgets. " * 80)
+            + "\n\n"
+            + ("Paragraph two about gadgets. " * 80)
+        )
+        fake = FakeVector()
+        idx = VaultIndexer.__new__(VaultIndexer)
+        idx._vector = fake
+        asyncio.run(idx._ingest_vectors("entities/x", text, obs_id=42))
+        assert len(fake.calls) == 1
+        sent_chunks, uri, oid = fake.calls[0]
+        assert uri == "entities/x"
+        assert oid == 42
+        assert isinstance(sent_chunks[0], str)
+        assert all(
+            len(c) <= VaultIndexer.CHUNK_MAX_SENTENCE_CHARS + 5 for c in sent_chunks
+        )

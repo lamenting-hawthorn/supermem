@@ -46,7 +46,6 @@ async def test_openrouter_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_openrouter_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # Need to reload config so it picks up cleared env var
-    import importlib
     import supermem.config as cfg
 
     monkeypatch.setattr(cfg, "OPENROUTER_API_KEY", "")

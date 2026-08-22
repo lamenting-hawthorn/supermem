@@ -72,6 +72,34 @@ SUPERMEM_CHROMA_PATH: Path = Path(
     os.getenv("SUPERMEM_CHROMA_PATH", str(_default_chroma))
 )
 
+# ── Embedding (tier 3 vector store) ──────────────────────────────────────────
+# SUPERMEM_EMBEDDING_PROVIDER: "" → Chroma's built-in ONNX MiniLM (default);
+# "fastembed" → use fastembed's TextEmbedding when the package is installed
+# (optional extra — NOT a hard dependency). Unknown values normalize to "".
+_EMBEDDING_PROVIDERS = {"", "fastembed"}
+DEFAULT_FASTEMBED_MODEL: str = "BAAI/bge-small-en-v1.5"
+
+
+def _parse_embedding_provider(raw: str | None) -> str:
+    val = (raw or "").strip().lower()
+    return val if val in _EMBEDDING_PROVIDERS else ""
+
+
+def _parse_embedding_model(raw: str | None) -> str:
+    return (raw or "").strip()
+
+
+def embedding_provider_from_env() -> str:
+    return _parse_embedding_provider(os.getenv("SUPERMEM_EMBEDDING_PROVIDER"))
+
+
+def embedding_model_from_env() -> str:
+    return _parse_embedding_model(os.getenv("SUPERMEM_EMBEDDING_MODEL"))
+
+
+SUPERMEM_EMBEDDING_PROVIDER: str = embedding_provider_from_env()
+SUPERMEM_EMBEDDING_MODEL: str = embedding_model_from_env()
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 
 SUPERMEM_VECTOR: bool = os.getenv("SUPERMEM_VECTOR", "false").lower() == "true"

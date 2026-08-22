@@ -412,7 +412,6 @@ async def test_maybe_purge_expired_deletes(db: DatabaseManager) -> None:
 
 @pytest.mark.asyncio
 async def test_supersede_by_source_marks_prior_active_rows(db: DatabaseManager) -> None:
-    sid = await db.create_session()
     uri = "vault/entities/alice.md"
     old = await db.write_observation(
         "Alice works at Acme",

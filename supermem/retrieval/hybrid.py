@@ -1,10 +1,15 @@
-"""HybridRetriever — orchestrates lifecycle-aware retrieval tiers 1–3.
+"""HybridRetriever — RRF-fused lifecycle-aware retrieval over tiers 1–3.
 
-Tier 1 (FTS5) → Tier 2 (Kuzu graph) → Tier 3 (ChromaDB).
+Content tiers (FTS5, ChromaDB vector) run concurrently and their ranked
+id-lists are fused with Reciprocal Rank Fusion (RRF). Lifecycle/authority
+filtering is applied AFTER fusion so retracted/superseded/archived/expired/
+out-of-validity rows can never surface regardless of where a tier ranked
+them. The Kuzu graph tier is not a query-ranked signal — it expands entity
+neighbours from seeds — so it stays as a post-fusion enrichment step that
+appends related ids behind the fused ranking.
 
-Short-circuits when min_results is reached. Skips unavailable tiers with
-a WARNING log entry (graceful degradation). Returns merged, deduplicated
-RetrievalResult with source_tier metadata for each obs_id.
+Tier 4 (raw-vault Agent) remains outside the fusion ladder: requests are
+capped at tier 3 and no agent fallback is invoked.
 
 Apache 2.0 — original implementation.
 """
@@ -26,10 +31,34 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+RRF_K = 60
+"""Reciprocal Rank Fusion smoothing constant (standard k=60)."""
+
+_TIER_NAMES = {1: "fts", 2: "graph", 3: "vector"}
+_TIER_NUMBERS = {name: num for num, name in _TIER_NAMES.items()}
+
+
+def rrf_fuse(*ranked_lists: list[int]) -> list[int]:
+    """Fuse ranked id-lists with Reciprocal Rank Fusion.
+
+    score(d) = Σ 1/(RRF_K + rankᵢ(d)) over every list containing d,
+    where rank starts at 1. Results are ordered by fused score descending;
+    ties break deterministically by first-seen order across the lists
+    in call order.
+    """
+    scores: dict[int, float] = {}
+    first_seen: dict[int, int] = {}
+    for ranked in ranked_lists:
+        for rank, obs_id in enumerate(ranked, start=1):
+            if obs_id not in first_seen:
+                first_seen[obs_id] = len(first_seen)
+            scores[obs_id] = scores.get(obs_id, 0.0) + 1.0 / (RRF_K + rank)
+    return sorted(scores, key=lambda oid: (-scores[oid], first_seen[oid]))
+
 
 class HybridRetriever:
     """
-    Orchestrates the supported lifecycle-aware retrieval tiers in order.
+    Fuses the supported lifecycle-aware retrieval tiers with RRF.
 
     Usage:
         retriever = HybridRetriever(db=db, graph=graph, chroma=chroma)
@@ -64,71 +93,72 @@ class HybridRetriever:
         limit: int = 20,
     ) -> RetrievalResult:
         """
-        Search through supported tiers 1 → 3 in order.
+        Search through supported tiers 1 → 3 with RRF fusion.
 
-        - Short-circuits when len(obs_ids) >= min_results.
-        - Skips unavailable tiers (logs WARNING).
-        - Returns merged, deduplicated obs_ids with source_tier of the
-          last tier that contributed results.
+        - FTS and vector run concurrently; ranked lists are fused with
+          Reciprocal Rank Fusion (k=60).
+        - Lifecycle/authority filtering runs AFTER fusion, so inactive
+          observations can never surface no matter how a tier ranked them.
+        - Graph expansion enriches fused results post-fusion (entity
+          neighbours appended behind the fused ranking).
+        - Skips unavailable tiers (logs WARNING); graceful degradation.
+        - Returns obs_ids ordered by fused score with source_tier of the
+          highest contributing content tier and metadata["tiers"] listing
+          every tier that contributed results.
 
         Args:
             query: Natural language query.
-            tier_limit: Maximum tier to try (1–3). Values above 3 are capped.
-            min_results: Stop early when this many results are found.
-            limit: Max total obs_ids to return.
+            tier_limit: Maximum tier to try (1–3). Values above 3 are capped;
+              tier 4 is never invoked.
+            min_results: Retained for API compatibility; all available tiers
+              always run concurrently, so no short-circuiting occurs.
+            limit: Max total obs_ids to return (always respected).
 
         Returns:
-            RetrievalResult with merged obs_ids and source_tier of highest tier used.
+            RetrievalResult with fused obs_ids, source_tier of the highest
+            contributing tier, and metadata["tiers"] attribution.
         """
         tier_limit = min(tier_limit, SUPERMEM_MAX_RETRIEVAL_TIER)
         t0 = time.monotonic() * 1000
-        all_ids: list[int] = []
-        highest_tier = 0
-        tier1_ids: list[int] = []
 
-        # ── Tiers 1+3: FTS5 + Vector in parallel ─────────────────────────────
-        # When vector is available, run both at once so graph expansion (Tier 2)
-        # benefits from the richer seed set. FTS5 catches keyword matches;
-        # vector catches semantic matches that keyword search would miss.
-        if tier_limit >= 1:
-            if tier_limit >= 3 and self._vector.available:
-                r1, r3 = await asyncio.gather(
-                    self._fts.search(query, limit=limit),
-                    self._vector.search(query, limit=limit),
-                )
-                tier1_ids = _merge(r1.obs_ids, r3.obs_ids)
-                if r1.obs_ids:
-                    highest_tier = 1
-                if r3.obs_ids:
-                    highest_tier = max(highest_tier, 3)
-            else:
-                r1 = await self._fts.search(query, limit=limit)
-                tier1_ids = r1.obs_ids
-                if r1.obs_ids:
-                    highest_tier = 1
+        # ── Concurrent content tiers: FTS5 (+ Vector when available) ─────────
+        tasks = [self._fts.search(query, limit=limit)]
+        if tier_limit >= 3 and self._vector.available:
+            tasks.append(self._vector.search(query, limit=limit))
+        else:
+            log.warning("tier3_skipped", reason="unavailable or above tier_limit")
+        r1, *rest = await asyncio.gather(*tasks)
+        r3 = rest[0] if rest else None
 
-            all_ids = await self._active_ids(_merge(all_ids, tier1_ids))
-            if len(all_ids) >= min_results and tier_limit <= 1:
-                return self._build(all_ids[:limit], highest_tier, t0)
+        contributing: list[str] = []
+        if r1.obs_ids:
+            contributing.append(_TIER_NAMES[r1.source_tier])
+        if r3 is not None and r3.obs_ids:
+            contributing.append(_TIER_NAMES[r3.source_tier])
 
-        # ── Tier 2: Kuzu graph (expands from FTS5+vector seed) ───────────────
-        if tier_limit >= 2:
-            if not self._graph_retriever.available:
-                log.warning("tier2_unavailable", reason="Kuzu not initialised")
-            else:
-                r2 = await self._graph_retriever.expand_from(
-                    seed_obs_ids=tier1_ids,
-                    exclude_ids=set(all_ids),
-                    limit=limit,
-                )
-                all_ids = await self._active_ids(_merge(all_ids, r2.obs_ids))
-                if r2.obs_ids:
-                    highest_tier = max(highest_tier, 2)
+        fused_ids = rrf_fuse(r1.obs_ids, r3.obs_ids if r3 else [])
 
-            if len(all_ids) >= min_results:
-                return self._build(all_ids[:limit], highest_tier, t0)
+        # ── Lifecycle authority filter AFTER fusion ──────────────────────────
+        fused_ids = await self._active_ids(fused_ids)
 
-        return self._build((await self._active_ids(all_ids))[:limit], highest_tier, t0)
+        # ── Graph enrichment (Tier 2): entity expansion from fused seeds ─────
+        # The graph tier does not rank by query relevance — it BFS-expands
+        # entities mentioned in seed observations — so it appends new ids
+        # behind the fused ordering rather than participating in RRF.
+        if tier_limit >= 2 and self._graph_retriever.available:
+            r2 = await self._graph_retriever.expand_from(
+                seed_obs_ids=fused_ids,
+                exclude_ids=set(fused_ids),
+                limit=limit,
+            )
+            if r2.obs_ids:
+                contributing.append(_TIER_NAMES[r2.source_tier])
+                enriched = await self._active_ids(r2.obs_ids)
+                seen = set(fused_ids)
+                fused_ids += [i for i in enriched if i not in seen]
+
+        highest_tier = max((_TIER_NUMBERS[name] for name in contributing), default=0)
+        return self._build(fused_ids[:limit], highest_tier, t0, tiers=contributing)
 
     # ── Convenience pass-throughs ─────────────────────────────────────────────
 
@@ -147,18 +177,20 @@ class HybridRetriever:
     # ── Private ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build(obs_ids: list[int], tier: int, t0: float) -> RetrievalResult:
+    def _build(
+        obs_ids: list[int], tier: int, t0: float, tiers: list[str]
+    ) -> RetrievalResult:
         latency = time.monotonic() * 1000 - t0
         log.info(
             "hybrid_search_done",
             results=len(obs_ids),
             highest_tier=tier,
+            tiers=tiers,
             latency_ms=round(latency, 1),
         )
-        return RetrievalResult(obs_ids=obs_ids, source_tier=tier, latency_ms=latency)
-
-
-def _merge(existing: list[int], new: list[int]) -> list[int]:
-    """Append new IDs not already in existing, preserving order."""
-    seen = set(existing)
-    return existing + [i for i in new if i not in seen]
+        return RetrievalResult(
+            obs_ids=obs_ids,
+            source_tier=tier,
+            latency_ms=latency,
+            metadata={"fusion": "rrf", "tiers": tiers},
+        )
