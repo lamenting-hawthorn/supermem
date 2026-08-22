@@ -50,7 +50,7 @@ from supermem.logging import get_logger
 from supermem.retrieval.hybrid import HybridRetriever
 from supermem.storage.database import DatabaseManager
 from supermem.storage.graph import KuzuGraphManager
-from supermem.storage.vector import ChromaManager
+from supermem.storage.vector import ChromaManager, create_vector_manager
 
 log = get_logger(__name__)
 
@@ -75,7 +75,7 @@ async def _startup() -> None:
     await _db.init()
     _graph = KuzuGraphManager()
     _graph.init()
-    _chroma = ChromaManager()
+    _chroma = create_vector_manager()
     _chroma.init()
     _retriever = HybridRetriever(db=_db, graph=_graph, chroma=_chroma)
     log.info("worker_started", port=SUPERMEM_WORKER_PORT)

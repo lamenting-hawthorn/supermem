@@ -73,11 +73,18 @@ SUPERMEM_CHROMA_PATH: Path = Path(
 )
 
 # ── Embedding (tier 3 vector store) ──────────────────────────────────────────
-# SUPERMEM_EMBEDDING_PROVIDER: "" → Chroma's built-in ONNX MiniLM (default);
+# SUPERMEM_EMBEDDING_PROVIDER: "" → backend default (Chroma built-in ONNX MiniLM
+#   for the legacy chroma backend; NO provider for the sqlite backend, which
+#   therefore degrades to unavailable);
 # "fastembed" → use fastembed's TextEmbedding when the package is installed
-# (optional extra — NOT a hard dependency). Unknown values normalize to "".
-_EMBEDDING_PROVIDERS = {"", "fastembed"}
+#   (optional extra — NOT a hard dependency);
+# "local-endpoint" → POST to an OpenAI-compatible /embeddings endpoint
+#   (LM Studio / Ollama serve bge/nomic-embed models) configured via
+#   SUPERMEM_EMBEDDING_BASE_URL + SUPERMEM_EMBEDDING_MODEL.
+# Unknown values normalize to "".
+_EMBEDDING_PROVIDERS = {"", "fastembed", "local-endpoint"}
 DEFAULT_FASTEMBED_MODEL: str = "BAAI/bge-small-en-v1.5"
+DEFAULT_LOCAL_ENDPOINT_BASE_URL: str = "http://localhost:1234/v1"
 
 
 def _parse_embedding_provider(raw: str | None) -> str:
@@ -89,6 +96,10 @@ def _parse_embedding_model(raw: str | None) -> str:
     return (raw or "").strip()
 
 
+def _parse_embedding_base_url(raw: str | None) -> str:
+    return (raw or "").strip()
+
+
 def embedding_provider_from_env() -> str:
     return _parse_embedding_provider(os.getenv("SUPERMEM_EMBEDDING_PROVIDER"))
 
@@ -97,8 +108,37 @@ def embedding_model_from_env() -> str:
     return _parse_embedding_model(os.getenv("SUPERMEM_EMBEDDING_MODEL"))
 
 
+def embedding_base_url_from_env() -> str:
+    return _parse_embedding_base_url(os.getenv("SUPERMEM_EMBEDDING_BASE_URL"))
+
+
 SUPERMEM_EMBEDDING_PROVIDER: str = embedding_provider_from_env()
 SUPERMEM_EMBEDDING_MODEL: str = embedding_model_from_env()
+SUPERMEM_EMBEDDING_BASE_URL: str = (
+    embedding_base_url_from_env() or DEFAULT_LOCAL_ENDPOINT_BASE_URL
+)
+
+# ── Vector backend ────────────────────────────────────────────────────────────
+# SUPERMEM_VECTOR_BACKEND: "" → auto-select (sqlite backend when sqlite-vec is
+# importable, else legacy chroma backend when chromadb is importable, else an
+# always-unavailable manager); explicit "sqlite" / "chroma" / "none" overrides.
+_VECTOR_BACKENDS = {"", "sqlite", "chroma", "none"}
+
+
+def _parse_vector_backend(raw: str | None) -> str:
+    val = (raw or "").strip().lower()
+    return val if val in _VECTOR_BACKENDS else ""
+
+
+def vector_backend_from_env() -> str:
+    return _parse_vector_backend(os.getenv("SUPERMEM_VECTOR_BACKEND"))
+
+
+SUPERMEM_VECTOR_BACKEND: str = vector_backend_from_env()
+
+# Directory holding the sqlite-vec store (vectors.db lives beside the main DB
+# so a single backup of ~/.supermem covers everything).
+SUPERMEM_VECTORS_PATH: Path = SUPERMEM_DB_PATH.parent / "vectors.db"
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 

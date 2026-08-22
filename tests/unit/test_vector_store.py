@@ -8,6 +8,8 @@ import pytest
 
 import supermem.config as config
 import supermem.storage.vector as vector_mod
+import supermem.storage.vector_factory as factory
+import supermem.storage.vector_sqlite as vector_sqlite
 from supermem.config import DEFAULT_FASTEMBED_MODEL
 from supermem.storage.vector import (
     ChromaManager,
@@ -102,6 +104,7 @@ def test_parse_embedding_provider_normalization() -> None:
     assert config._parse_embedding_provider(None) == ""
     assert config._parse_embedding_provider("FastEmbed") == "fastembed"
     assert config._parse_embedding_provider("  fastembed  ") == "fastembed"
+    assert config._parse_embedding_provider("LOCAL-ENDPOINT") == "local-endpoint"
     # Unknown providers normalize to the default (empty string).
     assert config._parse_embedding_provider("onnx") == ""
     assert config._parse_embedding_provider("openai") == ""
@@ -112,6 +115,105 @@ def test_parse_embedding_model_strips() -> None:
     assert config._parse_embedding_model("  BAAI/bge-small-en-v1.5 ") == (
         "BAAI/bge-small-en-v1.5"
     )
+
+
+def test_parse_embedding_base_url() -> None:
+    assert config._parse_embedding_base_url(None) == ""
+    assert config.embedding_base_url_from_env() in {
+        "",
+        config.DEFAULT_LOCAL_ENDPOINT_BASE_URL,
+    }
+    assert config.SUPERMEM_EMBEDDING_BASE_URL  # module constant always usable
+
+
+def test_env_base_url_accessor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPERMEM_EMBEDDING_BASE_URL", " http://localhost:8080/v1 ")
+    assert config.embedding_base_url_from_env() == "http://localhost:8080/v1"
+    monkeypatch.delenv("SUPERMEM_EMBEDDING_BASE_URL")
+    assert config.embedding_base_url_from_env() == ""
+
+
+# ── Vector backend parsing ───────────────────────────────────────────────────
+
+
+def test_parse_vector_backend_normalization() -> None:
+    assert config._parse_vector_backend(None) == ""
+    assert config._parse_vector_backend("") == ""
+    assert config._parse_vector_backend(" SQLite ") == "sqlite"
+    assert config._parse_vector_backend("CHROMA") == "chroma"
+    assert config._parse_vector_backend("none") == "none"
+    assert config._parse_vector_backend("qdrant") == ""
+
+
+def test_vector_backend_env_accessor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPERMEM_VECTOR_BACKEND", "sqlite")
+    assert config.vector_backend_from_env() == "sqlite"
+    monkeypatch.setenv("SUPERMEM_VECTOR_BACKEND", "bogus")
+    assert config.vector_backend_from_env() == ""
+    monkeypatch.delenv("SUPERMEM_VECTOR_BACKEND")
+    assert config.vector_backend_from_env() == ""
+
+
+# ── Factory auto-selection ───────────────────────────────────────────────────
+
+
+def _set_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    sqlite_vec: object | None,
+    chromadb: object | None,
+) -> None:
+    monkeypatch.setattr(factory, "_import_sqlite_vec", lambda: sqlite_vec)
+    monkeypatch.setattr(factory, "_import_chromadb", lambda: chromadb)
+
+
+def test_factory_auto_prefers_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_backends(monkeypatch, object(), None)
+    mgr = factory.create_vector_manager()
+    assert isinstance(mgr, vector_sqlite.SqliteVecManager)
+
+
+def test_factory_auto_falls_back_to_chroma(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_backends(monkeypatch, None, object())
+    mgr = factory.create_vector_manager()
+    assert isinstance(mgr, vector_mod.ChromaManager)
+
+
+def test_factory_auto_none_installed_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_backends(monkeypatch, None, None)
+    mgr = factory.create_vector_manager()
+    assert isinstance(mgr, factory.UnavailableVectorManager)
+    assert not mgr.available
+
+
+def test_factory_explicit_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_backends(monkeypatch, object(), object())
+    none_mgr = factory.create_vector_manager("none")
+    assert isinstance(none_mgr, factory.UnavailableVectorManager)
+    assert isinstance(
+        factory.create_vector_manager("sqlite"), vector_sqlite.SqliteVecManager
+    )
+    assert isinstance(factory.create_vector_manager("chroma"), vector_mod.ChromaManager)
+    assert factory.create_vector_manager("NONE").available is False
+
+
+def test_factory_explicit_backend_missing_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_backends(monkeypatch, None, None)
+    assert isinstance(
+        factory.create_vector_manager("chroma"), factory.UnavailableVectorManager
+    )
+    assert isinstance(
+        factory.create_vector_manager("sqlite"), factory.UnavailableVectorManager
+    )
+
+
+def test_factory_reads_env_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_backends(monkeypatch, object(), object())
+    monkeypatch.setattr(factory, "vector_backend_from_env", lambda: "chroma")
+    assert isinstance(factory.create_vector_manager(), vector_mod.ChromaManager)
 
 
 def test_env_accessors_read_live_environment(monkeypatch: pytest.MonkeyPatch) -> None:
