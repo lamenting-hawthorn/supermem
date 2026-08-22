@@ -237,3 +237,7 @@ bench-compare:
 # Frozen BM-0 contract harness (upstream acceptance proof)
 bm0:
 	uv run python -m benchmarks.runner --output-root artifacts/bm0
+
+# Run a named competitive dataset: make bench-with DATASET=longmemeval-subset
+bench-with:
+	uv run python -m benchmarks.compare_runner --dataset $(DATASET)

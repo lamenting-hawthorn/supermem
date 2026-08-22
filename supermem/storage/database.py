@@ -144,11 +144,41 @@ class DatabaseManager(BaseStorage):
 
     @staticmethod
     def _active_clause(alias: str = "observations") -> str:
-        """WHERE fragment for rows that are both active and not expired."""
+        """WHERE fragment for rows that are active, unexpired, and effective now.
+
+        Binds two ``now`` parameters (unixepoch floats) in order:
+        one for the TTL check and one for the validity window.
+        """
         return (
             f"{alias}.status = 'active'"
             f" AND ({alias}.expires_at IS NULL OR {alias}.expires_at > ?)"
+            f" AND ({alias}.valid_from IS NULL OR {alias}.valid_from <= ?)"
+            f" AND ({alias}.valid_until IS NULL OR {alias}.valid_until > ?)"
         )
+
+    async def set_validity_window(
+        self,
+        obs_id: int,
+        valid_from: float | None = None,
+        valid_until: float | None = None,
+    ) -> bool:
+        """Set the effective-time validity window for an observation.
+
+        Both bounds are optional; pass ``None`` to clear a bound. Rows whose
+        window does not cover 'now' are excluded from all retrieval paths.
+        Returns False if no observation with that id exists.
+        """
+        conn = await self._ensure_init()
+        try:
+            async with conn.execute(
+                "UPDATE observations SET valid_from = ?, valid_until = ? WHERE id = ?",
+                (valid_from, valid_until, obs_id),
+            ) as cur:
+                updated = cur.rowcount > 0
+            await conn.commit()
+            return updated
+        except Exception as exc:
+            raise StorageError(f"set_validity_window failed: {exc}") from exc
 
     async def maybe_purge_expired(self, throttle_seconds: int = 300) -> int:
         """Delete expired observations, at most once per throttle window.
@@ -473,18 +503,48 @@ class DatabaseManager(BaseStorage):
             if unicodedata.category(ch) != "Mn"
         )
 
-    @staticmethod
-    def _term_coverage(content: str, terms: list[str]) -> int:
-        """Count how many distinct query terms appear in content."""
+    _STOPWORDS = frozenset(
+        """a an the is are was were do does did to of in on for with and or that
+        this it its as at by be been my your our their his her we you i me he she
+        they them what which who whom when where why how about into over after
+        before between out up down from can could should would will shall may
+        might must have has had am s t don doesn""".split()
+    )
+
+    @classmethod
+    def _content_terms(cls, terms: list[str]) -> list[str]:
+        """First token of each query term that isn't a stopword.
+
+        The FTS index and this matching key are built from the same first-token
+        convention, so a term 'matches' a document when its leading
+        content-bearing token appears among the document's tokens.
+        """
         import re
 
-        doc_tokens = set(re.findall(r"\w+", DatabaseManager._fold(content)))
-        matched = 0
+        keys: list[str] = []
         for term in terms:
-            term_tokens = re.findall(r"\w+", DatabaseManager._fold(term))
-            if term_tokens and term_tokens[0] in doc_tokens:
-                matched += 1
-        return matched
+            tokens = re.findall(r"\w+", cls._fold(term))
+            if tokens and tokens[0] not in cls._STOPWORDS:
+                keys.append(tokens[0])
+        return list(dict.fromkeys(keys))
+
+    @classmethod
+    def _term_coverage(cls, content: str, terms: list[str]) -> int:
+        """How many of the query's content-bearing keys appear in content.
+
+        Stopwords are ignored so a natural-language question isn't penalized
+        for missing 'what'/'the'/'to' in a document.
+        """
+        import re
+
+        doc_tokens = set(re.findall(r"\w+", cls._fold(content)))
+        return sum(1 for key in cls._content_terms(terms) if key in doc_tokens)
+
+    @classmethod
+    def _min_coverage_for(cls, terms: list[str]) -> int:
+        """Require at least half the content-bearing keys (min 1) to hit."""
+        n = len(cls._content_terms(terms)) or 1
+        return max(1, -(-n // 2))
 
     async def fts_search(self, query: str, limit: int = 20) -> list[int]:
         """FTS5 keyword search. Returns observation IDs ranked by relevance.
@@ -508,10 +568,10 @@ class DatabaseManager(BaseStorage):
                 + """
                    ORDER BY rank
                    LIMIT ?""",
-                (match_query, now, limit * 3),
+                (match_query, now, now, now, limit * 3),
             ) as cur:
                 rows = await cur.fetchall()
-            min_coverage = 1 if len(raw_terms) < 2 else max(2, -(-len(raw_terms) // 2))
+            min_coverage = self._min_coverage_for(raw_terms)
             selected: list[int] = []
             for row in rows:
                 if self._term_coverage(row[1], raw_terms) >= min_coverage:
@@ -535,7 +595,7 @@ class DatabaseManager(BaseStorage):
             f"SELECT id FROM observations WHERE id IN ({placeholders}) AND "
             + self._active_clause()
             + "",
-            (*ids, now),
+            (*ids, now, now, now),
         ) as cur:
             rows = await cur.fetchall()
         active = {row[0] for row in rows}
@@ -553,7 +613,7 @@ class DatabaseManager(BaseStorage):
                 f"SELECT * FROM observations WHERE id IN ({placeholders}) AND "
                 + self._active_clause()
                 + " ORDER BY created_at",
-                (*ids, now),
+                (*ids, now, now, now),
             ) as cur:
                 rows = await cur.fetchall()
             return [dict(row) for row in rows]
@@ -569,7 +629,7 @@ class DatabaseManager(BaseStorage):
                 "SELECT created_at, session_id FROM observations WHERE id = ? AND "
                 + self._active_clause()
                 + "",
-                (obs_id, now),
+                (obs_id, now, now, now),
             ) as cur:
                 anchor = await cur.fetchone()
             if not anchor:
@@ -593,10 +653,12 @@ class DatabaseManager(BaseStorage):
                 ORDER BY created_at ASC LIMIT ?
             """
             )
-            async with conn.execute(before_query, (ts, now, sid, sid, window)) as cur:
+            async with conn.execute(
+                before_query, (ts, now, now, now, sid, sid, window)
+            ) as cur:
                 before = [dict(r) for r in await cur.fetchall()]
             async with conn.execute(
-                after_query, (ts, now, sid, sid, window + 1)
+                after_query, (ts, now, now, now, sid, sid, window + 1)
             ) as cur:
                 after = [dict(r) for r in await cur.fetchall()]
             return list(reversed(before)) + after
@@ -719,7 +781,7 @@ class DatabaseManager(BaseStorage):
             + self._active_clause()
             + """
                ORDER BY created_at DESC LIMIT ?""",
-            (session_id, now, limit),
+            (session_id, now, now, now, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in reversed(rows)]
@@ -772,7 +834,7 @@ class DatabaseManager(BaseStorage):
             + self._active_clause()
             + """
                ORDER BY created_at DESC LIMIT ?""",
-            (since, now, limit),
+            (since, now, now, now, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]

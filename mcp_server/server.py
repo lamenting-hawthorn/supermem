@@ -689,6 +689,25 @@ async def _shutdown() -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _source_annotation(obs: dict) -> str:
+    """Build a compact provenance annotation for a cited observation."""
+    source_id = obs.get("source_id")
+    observed_at = obs.get("observed_at")
+    fragments: list[str] = []
+    if source_id:
+        fragments.append(str(source_id))
+    if observed_at is not None:
+        try:
+            fragments.append(
+                f"observed {time.strftime('%Y-%m-%d', time.gmtime(float(observed_at)))}"
+            )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not fragments:
+        return ""
+    return f"[source: {' | '.join(fragments)}]"
+
+
 def _format_obs_reply(obs_list: list[dict], tier: int) -> str:
     """Format retrieved observations into a human-readable reply."""
     tier_label = {1: "FTS5", 2: "graph", 3: "vector"}.get(tier, "?")
@@ -696,7 +715,8 @@ def _format_obs_reply(obs_list: list[dict], tier: int) -> str:
     for obs in obs_list[:5]:  # cap at 5 to keep context size reasonable
         content = obs.get("content", "").strip()
         if content:
-            parts.append(content)
+            annotation = _source_annotation(obs)
+            parts.append(f"{content}\n{annotation}" if annotation else content)
     return "\n\n".join(parts)
 
 

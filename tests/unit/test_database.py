@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -495,3 +496,82 @@ async def test_fts_search_handles_quotes_and_punctuation(db: DatabaseManager) ->
     results = await db.fts_search('project-alpha "quoted" e-mail')
     assert oid in results
     assert await db.fts_search("") == []
+
+
+# ── Temporal validity: effective-time windows ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_valid_from_in_future_excluded_now(db: DatabaseManager) -> None:
+    future = time.time() + 86400
+    oid = await db.write_observation("Alice becomes CEO next year", valid_from=future)
+    assert await db.fts_search("Alice") == []
+    assert await db.active_obs_ids([oid]) == []
+    assert await db.get_observations([oid]) == []
+
+
+@pytest.mark.asyncio
+async def test_valid_from_in_past_visible(db: DatabaseManager) -> None:
+    past = time.time() - 86400
+    oid = await db.write_observation("Alice joined Acme last year", valid_from=past)
+    assert oid in await db.fts_search("Acme")
+    assert await db.active_obs_ids([oid]) == [oid]
+
+
+@pytest.mark.asyncio
+async def test_expired_valid_until_excluded(db: DatabaseManager) -> None:
+    past = time.time() - 86400
+    oid = await db.write_observation("Alice lives in Berlin", valid_until=past)
+    assert await db.fts_search("Berlin") == []
+    assert await db.active_obs_ids([oid]) == []
+    assert await db.get_observations([oid]) == []
+
+
+@pytest.mark.asyncio
+async def test_active_window_visible(db: DatabaseManager) -> None:
+    oid = await db.write_observation(
+        "Alice is on the platform team",
+        valid_from=time.time() - 3600,
+        valid_until=time.time() + 3600,
+    )
+    assert oid in await db.fts_search("platform")
+    assert await db.get_observations([oid]) != []
+
+
+@pytest.mark.asyncio
+async def test_null_window_rows_unaffected(db: DatabaseManager) -> None:
+    sid = await db.create_session()
+    oid = await db.write_observation("plain observation with no window", session_id=sid)
+    assert oid in await db.fts_search("window")
+    assert await db.active_obs_ids([oid]) == [oid]
+    assert await db.get_observations([oid])
+    assert await db.get_timeline(oid)
+    assert any(r["id"] == oid for r in await db.get_recent_observations(sid))
+    assert any(r["id"] == oid for r in await db.get_recent_observations_by_age())
+
+
+@pytest.mark.asyncio
+async def test_set_validity_window_round_trip(db: DatabaseManager) -> None:
+    start = time.time() - 7200
+    end = time.time() + 7200
+    oid = await db.write_observation("Alice is visiting Oslo")
+
+    assert await db.set_validity_window(oid, valid_from=start, valid_until=end) is True
+    obs = await db.get_observations([oid])
+    assert obs and abs(obs[0]["valid_from"] - start) < 1e-6
+    assert abs(obs[0]["valid_until"] - end) < 1e-6
+
+    # Closing the window hides the row from retrieval.
+    await db.set_validity_window(oid, valid_until=time.time() - 60)
+    assert await db.get_observations([oid]) == []
+
+    # Clearing the bounds (None) restores default visibility.
+    await db.set_validity_window(oid, valid_from=None, valid_until=None)
+    assert oid in await db.fts_search("Oslo")
+
+
+@pytest.mark.asyncio
+async def test_set_validity_window_missing_id_returns_false(
+    db: DatabaseManager,
+) -> None:
+    assert await db.set_validity_window(999999, valid_from=0.0) is False

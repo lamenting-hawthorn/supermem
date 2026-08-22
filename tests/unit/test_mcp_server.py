@@ -124,6 +124,28 @@ class TestFormatObsReply:
         assert "agent" not in result
         assert "?" in result
 
+    def test_source_annotation_included_when_provenance_present(self):
+        obs = [
+            {
+                "id": 7,
+                "content": "Alice works at Acme",
+                "source_id": "entities/alice.md",
+                "observed_at": 1785542400.0,  # 2026-08-01 UTC
+            }
+        ]
+        result = srv._format_obs_reply(obs, tier=1)
+        assert "[source: entities/alice.md | observed 2026-08-01]" in result
+
+    def test_source_annotation_omitted_without_provenance(self):
+        obs = [{"id": 1, "content": "plain fact", "source_id": None}]
+        result = srv._format_obs_reply(obs, tier=1)
+        assert "[source:" not in result
+
+    def test_source_annotation_partial_provenance(self):
+        obs = [{"content": "dated fact", "observed_at": 1785542400.0}]
+        result = srv._format_obs_reply(obs, tier=2)
+        assert "[source: observed 2026-08-01]" in result
+
 
 class TestReadHelpers:
     """File-reading helpers with missing/malformed files."""
