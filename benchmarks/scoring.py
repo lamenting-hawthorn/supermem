@@ -6,6 +6,8 @@ returning 0.0 instead of raising.
 
 from __future__ import annotations
 
+import math
+
 from benchmarks.harness_types import BenchmarkCase, CitedResult
 from benchmarks.oracle import CaseVerdict
 
@@ -165,6 +167,106 @@ def citation_verification_rate(verdicts: list[CaseVerdict]) -> float:
         return 0.0
     ok = sum(1 for v in eligible if not v.details.get("citation_failures"))
     return ok / len(eligible)
+
+
+def estimate_tokens(chars: int) -> int:
+    """Rough token estimate (~4 chars/token) for receipt accounting only."""
+    return math.ceil(chars / 4) if chars > 0 else 0
+
+
+def _case_hit(case: BenchmarkCase, results: list[CitedResult], k: int) -> float:
+    """1.0 when all must_include terms appear in the top-k results."""
+    top = results[: max(k, 0)]
+    return (
+        1.0
+        if all(any(m in r.content for r in top) for m in case.expected.must_include)
+        else 0.0
+    )
+
+
+def context_stats(
+    cases: list[BenchmarkCase], results_by_query_id: Results, k: int
+) -> dict[str, float | int | None]:
+    """Token-efficiency accounting: context injected per query.
+
+    ``context_chars`` is the summed content length of the adapter's top-k
+    results — the context a downstream consumer would ingest. Token figures
+    are the ~4-chars-per-token estimate and labelled ``*_est`` accordingly.
+    """
+    chars_all: list[int] = []
+    tokens_all: list[int] = []
+    recalled_tokens: list[int] = []
+    for case in cases:
+        results = _results_for(results_by_query_id, case.query_id)
+        chars = sum(len(r.content) for r in results[: max(k, 0)])
+        chars_all.append(chars)
+        tokens_all.append(estimate_tokens(chars))
+        if case.expected.expect_empty or not case.expected.must_include:
+            continue
+        if _case_hit(case, results, k):
+            recalled_tokens.append(estimate_tokens(chars))
+    return {
+        "avg_context_chars": (
+            round(sum(chars_all) / len(chars_all), 1) if chars_all else 0.0
+        ),
+        "max_context_chars": max(chars_all) if chars_all else 0,
+        "avg_context_tokens_est": (
+            round(sum(tokens_all) / len(tokens_all), 1) if tokens_all else 0.0
+        ),
+        "total_context_tokens_est": sum(tokens_all),
+        "avg_context_tokens_per_recall": (
+            round(sum(recalled_tokens) / len(recalled_tokens), 1)
+            if recalled_tokens
+            else None
+        ),
+    }
+
+
+def context_rot(
+    cases: list[BenchmarkCase], results_by_query_id: Results, k: int
+) -> dict[str, object]:
+    """Context-rot probe: does recall degrade as injected context grows?
+
+    Buckets recallable (non-expect_empty) cases into terciles by injected
+    context size and reports per-tercile recall. ``detected`` is True when
+    the largest-context tercile trails the smallest-context tercile by >=0.1
+    recall, False when no rot is measured, and None when the corpus has too
+    few recallable cases (<6) to say anything meaningful.
+    """
+    pts: list[tuple[int, float]] = []
+    for case in cases:
+        if case.expected.expect_empty or not case.expected.must_include:
+            continue
+        results = _results_for(results_by_query_id, case.query_id)
+        chars = sum(len(r.content) for r in results[: max(k, 0)])
+        pts.append((chars, _case_hit(case, results, k)))
+    n = len(pts)
+    if n < 6:
+        return {
+            "terciles": [],
+            "recall_delta": None,
+            "detected": None,
+            "n_applicable": n,
+        }
+    pts.sort()
+    third = max(1, n // 3)
+    buckets = [b for b in (pts[:third], pts[third : 2 * third], pts[2 * third :]) if b]
+    terciles = [
+        {
+            "context_chars_min": b[0][0],
+            "context_chars_max": b[-1][0],
+            "n": len(b),
+            "recall": round(sum(h for _, h in b) / len(b), 4),
+        }
+        for b in buckets
+    ]
+    delta = terciles[0]["recall"] - terciles[-1]["recall"]
+    return {
+        "terciles": terciles,
+        "recall_delta": round(delta, 4),
+        "detected": delta >= 0.1,
+        "n_applicable": n,
+    }
 
 
 def latency_percentiles(latencies_ms: list[float]) -> dict[str, float]:

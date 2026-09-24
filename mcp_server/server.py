@@ -279,6 +279,77 @@ def _validate_int_bounds(
 # ── MCP application ───────────────────────────────────────────────────────────
 
 
+def _source_file_for_uri(source_uri: str) -> Any | None:
+    """Resolve a vault-relative source URI to an existing file inside the vault.
+
+    Returns ``None`` for absolute/traversal paths, non-.md files, or anything
+    that resolves outside ``SUPERMEM_VAULT_PATH``.
+    """
+    from pathlib import Path
+
+    relative = Path(source_uri)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        return None
+    try:
+        root = SUPERMEM_VAULT_PATH.resolve(strict=True)
+        candidate = (root / relative).resolve()
+    except OSError:
+        return None
+    if candidate.suffix.lower() != ".md" or not candidate.is_file():
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _citation_for_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Build a digest-verifiable citation for an observation row.
+
+    ``content_digest`` is the observation's stored ``content_hash``, re-verified
+    by re-hashing the returned content. ``source_digest`` is the sha256 of the
+    cited vault file at query time — a client can independently recompute it.
+    ``source_revision`` is reported as ``None``: the observations store does
+    not track source revisions (the BM-0 ledger does). ``verified`` is True
+    only when the content digest matches AND, when a source is cited, its
+    digest could be recomputed from the vault.
+    """
+    content = str(row.get("content") or "")
+    content_digest = (
+        row.get("content_hash") or hashlib.sha256(content.encode()).hexdigest()
+    )
+    content_verified = hashlib.sha256(content.encode()).hexdigest() == content_digest
+
+    source_id = row.get("source_id")
+    source_uri = f"{source_id}.md" if source_id else None
+    source_digest = None
+    if source_uri is not None:
+        path = _source_file_for_uri(source_uri)
+        if path is not None:
+            source_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    source_verified: bool | None
+    if source_uri is None:
+        source_verified = None
+    else:
+        source_verified = source_digest is not None
+
+    return {
+        "source_uri": source_uri,
+        "source_span": row.get("source_span")
+        or (f"{source_uri}#whole" if source_uri else None),
+        "source_revision": None,
+        "source_digest": source_digest,
+        "content_digest": content_digest,
+        "content_verified": content_verified,
+        "source_verified": source_verified,
+        "verified": content_verified and (source_verified is not False),
+    }
+
+
 @asynccontextmanager
 async def _supermem_lifespan(_: FastMCP) -> AsyncIterator[dict[str, object]]:
     """Let FastMCP own startup and shutdown for every supported transport."""
@@ -357,26 +428,31 @@ async def supermem_hybrid(
     query: str,
     tier_limit: int = SUPERMEM_MAX_RETRIEVAL_TIER,
     ctx: Context = None,  # type: ignore[assignment]
-) -> str:
+) -> dict[str, Any]:
     """
-    Tiered hybrid memory search with explicit source attribution.
+    Hybrid memory search (RRF-fused tiers) with digest-verifiable citations.
 
-    Tries lifecycle-aware retrieval tiers in order: FTS5 (1) → Kuzu graph (2)
-    → ChromaDB vectors (3). Raw Agent vault navigation (Tier 4) is unavailable
-    until a source-aware lifecycle broker exists.
+    Runs the lifecycle-aware tiers concurrently (FTS5 1, Kuzu graph 2,
+    vector 3) and fuses with RRF; the optional reranker only re-orders the
+    fused set. Raw Agent vault navigation (Tier 4) is unavailable until a
+    source-aware lifecycle broker exists.
 
     Args:
         query: Natural language search query.
         tier_limit: Maximum tier to try (1–3). Requests above 3 are capped.
 
     Returns:
-        JSON string with obs_ids, source_tier, latency_ms, and observation content.
+        Structured result (MCP ``structuredContent``): obs_ids, source_tier,
+        latency_ms, and per-observation ``citation`` objects carrying
+        source_uri/source_span, the sha256 source digest (recomputable from
+        the vault file), the stored content digest, and ``verified`` flags.
+        Re-verify any citation later with the ``verify_citation`` tool.
     """
     denial = _guard_tool(ctx, "supermem_hybrid")
     if denial:
-        return json.dumps({"error": denial, "obs_ids": []})
+        return {"error": denial, "obs_ids": []}
     if _ctx.retriever is None:
-        return json.dumps({"error": "HybridRetriever not initialised", "obs_ids": []})
+        return {"error": "HybridRetriever not initialised", "obs_ids": []}
 
     try:
         result = await _ctx.retriever.search(
@@ -388,23 +464,82 @@ async def supermem_hybrid(
             else []
         )
 
-        payload = {
+        return {
             "query": query,
             "source_tier": result.source_tier,
-            "tier_label": {1: "FTS5", 2: "Kuzu graph", 3: "ChromaDB"}.get(
+            "tier_label": {1: "FTS5", 2: "Kuzu graph", 3: "vector"}.get(
                 result.source_tier, "none"
             ),
             "latency_ms": round(result.latency_ms, 1),
             "obs_ids": result.obs_ids,
             "observations": [
-                {"id": o.get("id"), "content": o.get("content", "")[:500]}
+                {
+                    "id": o.get("id"),
+                    "content": o.get("content", "")[:500],
+                    "citation": _citation_for_row(o),
+                }
                 for o in obs_list
             ],
         }
-        return json.dumps(payload, indent=2)
     except Exception as exc:
         log.warning("supermem_hybrid_error", error=str(exc))
-        return json.dumps({"error": str(exc), "obs_ids": []})
+        return {"error": str(exc), "obs_ids": []}
+
+
+@mcp.tool
+async def verify_citation(
+    obs_id: int,
+    source_uri: str | None = None,
+    source_digest: str | None = None,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    """Re-verify the citation for an observation.
+
+    Recomputes the observation's content digest and the cited vault file's
+    source digest, then reports whether they match the stored/claimed values.
+    Pass the ``source_uri``/``source_digest`` from a previously returned
+    citation to check they still match what the vault contains now.
+
+    Args:
+        obs_id: Observation id returned by supermem_hybrid.
+        source_uri: Optional claimed source URI to compare.
+        source_digest: Optional claimed sha256 of the source file to compare.
+
+    Returns:
+        ``{"valid": bool, "citation": {...}, "reasons": [...]}`` — ``valid``
+        is True only when every recomputed/claimed field matches.
+    """
+    denial = _guard_tool(ctx, "verify_citation")
+    if denial:
+        return {"error": denial, "valid": False}
+    if _ctx.db is None:
+        return {"error": "Database not initialised", "valid": False}
+
+    try:
+        rows = await _ctx.db.get_observations([obs_id])
+    except Exception as exc:
+        log.warning("verify_citation_error", obs_id=obs_id, error=str(exc))
+        return {"error": str(exc), "valid": False}
+    if not rows:
+        return {"valid": False, "obs_id": obs_id, "reasons": ["observation_not_found"]}
+
+    citation = _citation_for_row(rows[0])
+    reasons: list[str] = []
+    if not citation["content_verified"]:
+        reasons.append("content_digest_mismatch")
+    if citation["source_uri"] and not citation["source_verified"]:
+        reasons.append("source_unverifiable")
+    if source_uri is not None and source_uri != citation["source_uri"]:
+        reasons.append("source_uri_mismatch")
+    if source_digest is not None and source_digest != citation["source_digest"]:
+        reasons.append("source_digest_mismatch")
+
+    return {
+        "valid": not reasons,
+        "obs_id": obs_id,
+        "citation": citation,
+        "reasons": reasons,
+    }
 
 
 @mcp.tool

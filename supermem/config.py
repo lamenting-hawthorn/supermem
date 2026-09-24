@@ -184,6 +184,12 @@ SUPERMEM_MEMORY_SIZE_LIMIT: int = 100 * 1024 * 1024
 # ── Capture / compression ─────────────────────────────────────────────────────
 
 SUPERMEM_COMPRESS_EVERY: int = int(os.getenv("SUPERMEM_COMPRESS_EVERY", "50"))
+SUPERMEM_COMPRESS_BUDGET_CHARS: int = int(
+    os.getenv("SUPERMEM_COMPRESS_BUDGET_CHARS", "2000")
+)
+SUPERMEM_COMPRESS_MIN_COVERAGE: float = float(
+    os.getenv("SUPERMEM_COMPRESS_MIN_COVERAGE", "0.6")
+)
 # TTL for regular observations in days (0 = no expiry)
 SUPERMEM_OBS_TTL_DAYS: int = int(os.getenv("SUPERMEM_OBS_TTL_DAYS", "90"))
 
