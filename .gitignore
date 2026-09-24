@@ -51,7 +51,7 @@ mcp.json
 artifacts/
 
 # generated external benchmark data (download via README_LONGMEMEVAL.md)
-benchmarks/datasets/longmemeval-subset/
+benchmarks/datasets/longmemeval-*/
 
 # internal audit docs (security findings) — local only, never pushed
 docs/handoffs/
