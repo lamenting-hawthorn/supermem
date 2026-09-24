@@ -511,6 +511,54 @@ class DatabaseManager(BaseStorage):
         might must have has had am s t don doesn""".split()
     )
 
+    _STEM_SUFFIXES = (
+        "ational",
+        "ization",
+        "fulness",
+        "ousness",
+        "iveness",
+        "tional",
+        "ation",
+        "ments",
+        "ment",
+        "ness",
+        "ingly",
+        "edly",
+        "able",
+        "ible",
+        "ing",
+        "ers",
+        "ier",
+        "est",
+        "ed",
+        "ly",
+        "es",
+        "er",
+        "e",
+        "s",
+    )
+
+    @classmethod
+    def _stem(cls, token: str) -> str:
+        """Deterministic lite stem for coverage matching.
+
+        The FTS5 index applies porter stemming; this approximates it for the
+        Python-side coverage check so "graduate" matches "graduated" instead
+        of being silently filtered. Both query keys and document tokens are
+        normalized identically, so an occasional wrong stem is harmless —
+        determinism is what matters here.
+        """
+        t = token
+        if len(t) >= 5 and (t.endswith("ies") or t.endswith("ied")):
+            return t[:-3] + "y"
+        for suffix in cls._STEM_SUFFIXES:
+            if t.endswith(suffix) and len(t) - len(suffix) >= 4:
+                t = t[: -len(suffix)]
+                break
+        if len(t) >= 4 and t[-1] == t[-2] and t[-1].isalpha() and t[-1] not in "aeiou":
+            t = t[:-1]
+        return t
+
     @classmethod
     def _content_terms(cls, terms: list[str]) -> list[str]:
         """First token of each query term that isn't a stopword.
@@ -533,12 +581,16 @@ class DatabaseManager(BaseStorage):
         """How many of the query's content-bearing keys appear in content.
 
         Stopwords are ignored so a natural-language question isn't penalized
-        for missing 'what'/'the'/'to' in a document.
+        for missing 'what'/'the'/'to' in a document. Both sides are lite-stemmed
+        so the check agrees with the porter-stemmed FTS index — without it a
+        question's "graduate" can never match a document's "graduated".
         """
         import re
 
-        doc_tokens = set(re.findall(r"\w+", cls._fold(content)))
-        return sum(1 for key in cls._content_terms(terms) if key in doc_tokens)
+        doc_stems = {cls._stem(t) for t in re.findall(r"\w+", cls._fold(content))}
+        return sum(
+            1 for key in cls._content_terms(terms) if cls._stem(key) in doc_stems
+        )
 
     @classmethod
     def _min_coverage_for(cls, terms: list[str]) -> int:
