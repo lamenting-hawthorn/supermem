@@ -62,9 +62,10 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
         self._vector.init()
         if not getattr(self._vector, "available", False):
             raise AdapterUnavailable("vector backend reports unavailable")
-        # Parent setup builds db + graph + indexer with vector=None; rebuild the
-        # indexer with our vector manager before walking.
-        await super().setup(workspace, dataset_dir)
+        # Copy sources + init stores WITHOUT indexing, then walk exactly once
+        # with the vector-enabled indexer. A second walk dead-ends on
+        # index_file's mtime/last_indexed guard and never ingests vectors.
+        await self._prepare(workspace, dataset_dir)
         assert isinstance(self._db, DatabaseManager)
         graph = (
             self._graph if (self._graph is not None and self._graph.available) else None
@@ -73,6 +74,7 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             self._db, graph, vector=self._vector, vault_path=workspace
         )
         await self._indexer.walk()
+        await self._stamp_observed_at(dataset_dir)
         # GraphRetriever dereferences .available, so it needs a manager object,
         # never None — an un-initialised manager simply reports unavailable.
         from supermem.storage.graph import KuzuGraphManager

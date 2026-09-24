@@ -71,8 +71,8 @@ def test_happy_path_conversion(input_jsonl: Path, tmp_path: Path) -> None:
     manifest = load_manifest(outdir)
     assert manifest["mutations"] == []
     assert manifest["n_cases"] == 3
-    # Sources rendered as markdown with frontmatter where dates parse.
-    src = (outdir / "sources" / "session-0.md").read_text(encoding="utf-8")
+    # Sources rendered as per-session markdown with frontmatter where dates parse.
+    src = (outdir / "sources" / "session-0-s0.md").read_text(encoding="utf-8")
     assert src.startswith("---\nobserved_at:")
     assert "- user:" in src
 
@@ -108,7 +108,7 @@ def test_must_include_substrings_verified_against_file(
     needles = cases["lm-1"].expected.must_include
     assert needles, "answer words like 'sony'/'camera' should survive verification"
     file_text = (
-        (outdir / "sources" / "session-0.md").read_text(encoding="utf-8").lower()
+        (outdir / "sources" / "session-0-s0.md").read_text(encoding="utf-8").lower()
     )
     assert all(n in file_text for n in needles)
 

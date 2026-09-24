@@ -32,6 +32,20 @@ class SupermemFtsAdapter(BaseBenchmarkAdapter):
         self._graph_dir: Path | None = None
 
     async def setup(self, workspace: Path, dataset_dir: Path) -> None:
+        await self._prepare(workspace, dataset_dir)
+        self._indexer = VaultIndexer(
+            self._db, self._graph, vector=None, vault_path=workspace
+        )
+        await self._indexer.walk()
+        await self._stamp_observed_at(dataset_dir)
+
+    async def _prepare(self, workspace: Path, dataset_dir: Path) -> None:
+        """Copy sources and initialise db + graph — WITHOUT indexing.
+
+        Split out so subclasses can build their own indexer (e.g. with a
+        vector manager) and walk exactly once; walking twice dead-ends on the
+        mtime/last_indexed guard and silently skips vector ingestion.
+        """
         self._workspace = workspace
         sources = dataset_dir / "sources"
         entities = workspace / "entities"
@@ -47,11 +61,6 @@ class SupermemFtsAdapter(BaseBenchmarkAdapter):
         except Exception as exc:
             log.warning("bench_graph_unavailable", error=str(exc))
             self._graph = None
-        self._indexer = VaultIndexer(
-            self._db, self._graph, vector=None, vault_path=workspace
-        )
-        await self._indexer.walk()
-        await self._stamp_observed_at(dataset_dir)
 
     async def _stamp_observed_at(self, dataset_dir: Path) -> None:
         """Deterministic temporal anchor: sources may declare
