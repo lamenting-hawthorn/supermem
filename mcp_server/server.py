@@ -603,7 +603,7 @@ async def _startup() -> None:
     """
     from supermem.storage.database import DatabaseManager
     from supermem.storage.graph import KuzuGraphManager
-    from supermem.storage.vector import ChromaManager
+    from supermem.storage.vector import create_vector_manager
     from supermem.retrieval.hybrid import HybridRetriever
     from supermem.capture.session import SessionManager
     from supermem.capture.compressor import MemoryCompressor
@@ -623,7 +623,7 @@ async def _startup() -> None:
     except Exception as exc:
         log.warning("graph_init_failed", error=str(exc))
 
-    _ctx.chroma = ChromaManager()
+    _ctx.chroma = create_vector_manager()
     try:
         _ctx.chroma.init()
     except Exception as exc:

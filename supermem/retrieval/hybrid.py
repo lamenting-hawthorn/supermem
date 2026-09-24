@@ -101,6 +101,8 @@ class HybridRetriever:
           observations can never surface no matter how a tier ranked them.
         - Graph expansion enriches fused results post-fusion (entity
           neighbours appended behind the fused ranking).
+        - Optional cross-encoder rerank (SUPERMEM_RERANKER=1) re-orders the
+          top fused candidates after the lifecycle filter; default OFF.
         - Skips unavailable tiers (logs WARNING); graceful degradation.
         - Returns obs_ids ordered by fused score with source_tier of the
           highest contributing content tier and metadata["tiers"] listing
@@ -141,6 +143,11 @@ class HybridRetriever:
         # ── Lifecycle authority filter AFTER fusion ──────────────────────────
         fused_ids = await self._active_ids(fused_ids)
 
+        # ── Optional local cross-encoder rerank (flag-gated, default OFF) ────
+        # Re-ranks the top fused candidates by query-document relevance.
+        # Never re-introduces filtered ids: it only reorders the active set.
+        fused_ids, rerank_applied = await self._rerank_fused(query, fused_ids)
+
         # ── Graph enrichment (Tier 2): entity expansion from fused seeds ─────
         # The graph tier does not rank by query relevance — it BFS-expands
         # entities mentioned in seed observations — so it appends new ids
@@ -157,7 +164,12 @@ class HybridRetriever:
                 seen = set(fused_ids)
                 fused_ids += [i for i in enriched if i not in seen]
 
-        highest_tier = max((_TIER_NUMBERS[name] for name in contributing), default=0)
+        highest_tier = max(
+            (_TIER_NUMBERS[name] for name in contributing if name in _TIER_NUMBERS),
+            default=0,
+        )
+        if rerank_applied:
+            contributing.append("rerank")
         return self._build(fused_ids[:limit], highest_tier, t0, tiers=contributing)
 
     # ── Convenience pass-throughs ─────────────────────────────────────────────
@@ -175,6 +187,43 @@ class HybridRetriever:
         return await self._db.get_timeline(obs_id, window)
 
     # ── Private ───────────────────────────────────────────────────────────────
+
+    async def _rerank_fused(
+        self, query: str, fused_ids: list[int]
+    ) -> tuple[list[int], bool]:
+        """Re-rank fused candidates with the local cross-encoder (if enabled).
+
+        Flag-gated by ``SUPERMEM_RERANKER`` (default OFF) and by reranker
+        availability. Input is capped at ``RERANK_CAP`` (top 50) fused ids;
+        the remainder keeps fused order behind the reranked block. Returns
+        ``(reordered_ids, applied)`` — ``applied`` is True only when the
+        reranker actually ran, so metadata["tiers"] attribution stays truthful.
+        Never raises; degrades to the fused ordering on any failure.
+        """
+        import supermem.retrieval.rerank as _rerank
+
+        if not _rerank.RERANKER_ENABLED or len(fused_ids) <= 1:
+            return fused_ids, False
+        reranker = _rerank.get_reranker()
+        if not reranker.available:
+            return fused_ids, False
+        try:
+            cap = fused_ids[: _rerank.RERANK_CAP]
+            records = await self.get_observations(cap)
+            by_id = {r["id"]: r for r in records}
+            candidates = [by_id[oid] for oid in cap if oid in by_id]
+            if len(candidates) <= 1:
+                return fused_ids, False
+            reranked = await reranker.rerank(query, candidates)
+            if not reranked:
+                return fused_ids, False
+            reranked_ids = [c["id"] for c in reranked]
+            seen = set(reranked_ids)
+            remainder = [oid for oid in fused_ids if oid not in seen]
+            return reranked_ids + remainder, True
+        except Exception as exc:
+            log.warning("hybrid_rerank_failed", error=str(exc))
+            return fused_ids, False
 
     @staticmethod
     def _build(

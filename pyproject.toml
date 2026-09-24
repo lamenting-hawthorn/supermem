@@ -29,6 +29,10 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "kuzu>=0.11.3",
     "watchdog>=6.0.0",
+    # sqlite-vec: loadable SQLite extension powering the default vector tier
+    "sqlite-vec>=0.1.6",
+    # fastembed: local ONNX embedder — default provider for the sqlite-vec tier
+    "fastembed>=0.7.3",
 
     # ── MCP server ────────────────────────────────────────────────────────────
     "fastmcp",
@@ -54,7 +58,7 @@ worker = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
 ]
-# ChromaDB vector retrieval (tier 3)
+# ChromaDB vector retrieval (tier 3) — legacy backend; sqlite-vec is the default
 vector = [
     "chromadb>=0.4.0",
     "sentence-transformers>=3.0.0",

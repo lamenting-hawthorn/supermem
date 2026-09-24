@@ -73,11 +73,18 @@ SUPERMEM_CHROMA_PATH: Path = Path(
 )
 
 # ── Embedding (tier 3 vector store) ──────────────────────────────────────────
-# SUPERMEM_EMBEDDING_PROVIDER: "" → Chroma's built-in ONNX MiniLM (default);
-# "fastembed" → use fastembed's TextEmbedding when the package is installed
-# (optional extra — NOT a hard dependency). Unknown values normalize to "".
-_EMBEDDING_PROVIDERS = {"", "fastembed"}
+# SUPERMEM_EMBEDDING_PROVIDER: "" → auto: fastembed when importable (declared
+#   dependency; the default embedder for the sqlite-vec backend), else Chroma's
+#   built-in ONNX MiniLM for the legacy chroma backend, else unavailable;
+# "fastembed" → require fastembed's TextEmbedding (bge-small-en-v1.5 default;
+#   a missing/failing install reports unavailable rather than falling back);
+# "local-endpoint" → POST to an OpenAI-compatible /embeddings endpoint
+#   (LM Studio / Ollama serve bge/nomic-embed models) configured via
+#   SUPERMEM_EMBEDDING_BASE_URL + SUPERMEM_EMBEDDING_MODEL.
+# Unknown values normalize to "".
+_EMBEDDING_PROVIDERS = {"", "fastembed", "local-endpoint"}
 DEFAULT_FASTEMBED_MODEL: str = "BAAI/bge-small-en-v1.5"
+DEFAULT_LOCAL_ENDPOINT_BASE_URL: str = "http://localhost:1234/v1"
 
 
 def _parse_embedding_provider(raw: str | None) -> str:
@@ -89,6 +96,10 @@ def _parse_embedding_model(raw: str | None) -> str:
     return (raw or "").strip()
 
 
+def _parse_embedding_base_url(raw: str | None) -> str:
+    return (raw or "").strip()
+
+
 def embedding_provider_from_env() -> str:
     return _parse_embedding_provider(os.getenv("SUPERMEM_EMBEDDING_PROVIDER"))
 
@@ -97,8 +108,63 @@ def embedding_model_from_env() -> str:
     return _parse_embedding_model(os.getenv("SUPERMEM_EMBEDDING_MODEL"))
 
 
+def embedding_base_url_from_env() -> str:
+    return _parse_embedding_base_url(os.getenv("SUPERMEM_EMBEDDING_BASE_URL"))
+
+
 SUPERMEM_EMBEDDING_PROVIDER: str = embedding_provider_from_env()
 SUPERMEM_EMBEDDING_MODEL: str = embedding_model_from_env()
+SUPERMEM_EMBEDDING_BASE_URL: str = (
+    embedding_base_url_from_env() or DEFAULT_LOCAL_ENDPOINT_BASE_URL
+)
+
+# ── Vector backend ────────────────────────────────────────────────────────────
+# SUPERMEM_VECTOR_BACKEND: "" → auto-select (sqlite backend when sqlite-vec is
+# importable, else legacy chroma backend when chromadb is importable, else an
+# always-unavailable manager); explicit "sqlite" / "chroma" / "none" overrides.
+_VECTOR_BACKENDS = {"", "sqlite", "chroma", "none"}
+
+
+def _parse_vector_backend(raw: str | None) -> str:
+    val = (raw or "").strip().lower()
+    return val if val in _VECTOR_BACKENDS else ""
+
+
+def vector_backend_from_env() -> str:
+    return _parse_vector_backend(os.getenv("SUPERMEM_VECTOR_BACKEND"))
+
+
+SUPERMEM_VECTOR_BACKEND: str = vector_backend_from_env()
+
+
+# ── Vector relevance floor ──────────────────────────────────────────────────
+# SUPERMEM_VECTOR_MAX_DISTANCE: cosine-distance cutoff for the sqlite-vec
+# tier. KNN otherwise always returns top-k nearest rows — including
+# irrelevant hits for out-of-scope queries — so hits worse than this are
+# dropped. Calibrated on the frozen bench corpus for the default embedder
+# (BAAI/bge-small-en-v1.5): true hits ≲0.31, noise ≳0.36. Retune per
+# embedding model/corpus; "off"/"none" disables the floor.
+def _parse_vector_max_distance(raw: str | None) -> float | None:
+    val = (raw or "").strip().lower()
+    if val in {"off", "none", "disabled", "false"}:
+        return None
+    try:
+        return float(val) if val else 0.35
+    except ValueError:
+        return 0.35
+
+
+def vector_max_distance_from_env() -> float | None:
+    return _parse_vector_max_distance(os.getenv("SUPERMEM_VECTOR_MAX_DISTANCE"))
+
+
+SUPERMEM_VECTOR_MAX_DISTANCE: float | None = vector_max_distance_from_env()
+
+# Path of the sqlite-vec store (default: vectors.db beside the main DB so a
+# single backup of ~/.supermem covers everything).
+SUPERMEM_VECTORS_PATH: Path = Path(
+    os.getenv("SUPERMEM_VECTORS_PATH", str(SUPERMEM_DB_PATH.parent / "vectors.db"))
+)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 
