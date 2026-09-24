@@ -78,10 +78,10 @@ AI Client (Claude Desktop / ChatGPT)
 mcp_server/server.py — FastMCP, exposes lifecycle-aware retrieval tools
   │
   ▼
-supermem/ — HybridRetriever (FTS5 → graph → vector, 3 tiers)
+supermem/ — HybridRetriever (FTS5 ∥ vector RRF fusion + graph expansion, tiers 1–3)
   ├── supermem/storage/database.py  — SQLite via aiosqlite
   ├── supermem/storage/graph.py     — Kuzu graph DB
-  ├── supermem/storage/vector.py    — Chroma vector store
+  ├── supermem/storage/vector.py    — vector backends (sqlite-vec default, Chroma optional extra)
   └── supermem/indexer/vault.py     — walks vault, populates stores
 
 Tier 4 raw-vault Agent navigation is unavailable until it can enforce source
@@ -113,7 +113,7 @@ Optional service started via `supermem serve --worker`. Provides:
 | `GET /health` | Liveness + DB/graph/vector readiness |
 | `GET /sessions` | Recent sessions with summaries |
 | `GET /observations` | Active observations only, filterable by type/session |
-| `POST /search` | Hybrid search (FTS5 → graph → vector; all requests cap at Tier 3) |
+| `POST /search` | Hybrid search (RRF-fused FTS5 + vector, graph expansion; all requests cap at Tier 3) |
 | `POST /index/rebuild` | Re-index entire vault |
 | `GET /backup` | Stream tar.gz backup |
 | `GET /stats` | Memory metrics |

@@ -21,7 +21,7 @@ retrieval stops at lifecycle-aware tiers 1–3; raw-vault Agent navigation (Tier
 | Capability | What it gives you |
 |------------|-------------------|
 | **Boundary-aware retrieval** | Fast FTS5 first, graph expansion second, and optional vector search third. Every supported transport stops at Tier 3. |
-| **Local-first vault** | Markdown files remain portable and inspectable; SQLite/Kuzu/Chroma indexes can be rebuilt. |
+| **Local-first vault** | Markdown files remain portable and inspectable; SQLite/Kuzu/sqlite-vec indexes can be rebuilt. |
 | **Memory lifecycle** | Observations carry provenance, confidence, sensitivity, validity, TTL, and `active`/`retracted` status metadata. |
 | **Retraction workflow** | Stale or sensitive observations can be retracted from FTS, vector-backed retrieval, timelines, and derived summaries. |
 | **Local productivity insights** | Heuristic open-task extraction, follow-up suggestions, and day summaries without an LLM call. |
@@ -78,7 +78,8 @@ docker compose --profile worker up
 
 ## Architecture: Boundary-Aware Retrieval
 
-Retrieval proceeds in order and short-circuits when enough results are found.
+Available content tiers run concurrently and their ranked lists are fused with
+Reciprocal Rank Fusion (k=60); graph expansion enriches the fused results.
 Tiers 1–3 never call an LLM. Every supported transport is capped at Tier 3.
 Tier 4 raw-vault Agent navigation is deliberately unavailable until a
 source-aware lifecycle broker can enforce the same retraction and deletion
@@ -90,17 +91,29 @@ Query
   ├─ Tier 1: SQLite FTS5 full-text search          ~1ms    always available
   │          porter tokenizer, WAL mode
   │
-  ├─ Tier 2: Kuzu embedded graph expansion         ~5ms    optional (install kuzu)
-  │          BFS traversal via [[wikilink]] edges
+  ├─ Tier 3: sqlite-vec vector similarity          ~10ms   optional (SUPERMEM_VECTOR=true)
+  │          fastembed embeddings (BAAI/bge-small-en-v1.5, ~130MB ONNX,
+  │          downloaded on first use); pluggable providers incl. local
+  │          OpenAI-compatible endpoints. ChromaDB remains as an optional
+  │          legacy backend (`vector` extra, SUPERMEM_VECTOR_BACKEND=chroma).
   │
-  ├─ Tier 3: ChromaDB vector similarity            ~50ms   optional (SUPERMEM_VECTOR=true)
-  │          sentence-transformer embeddings
+  ├─ optional: local cross-encoder rerank          flag-gated (SUPERMEM_RERANKER=true)
+  │          re-orders the top-50 fused candidates (fastembed TextCrossEncoder)
+  │
+  ├─ Tier 2: Kuzu embedded graph expansion         ~5ms    optional (install kuzu)
+  │          BFS entity expansion seeded by fused hits
   │
   └─ Tier 4: raw-vault Agent navigation            unavailable
              pending a source-aware lifecycle broker
 ```
 
-**Short-circuit rule**: if tier 1 returns ≥ `min_results` (default 3), tiers 2–3 are skipped entirely. Candidate IDs are filtered through observation lifecycle status before being returned, so retracted memories are excluded from search, timeline context, and derived summaries.
+**Fusion rule**: FTS and vector search run in parallel and their rankings fuse
+via RRF; graph hits are appended behind the fused ranking; the optional
+reranker only re-orders the fused set. Candidate IDs are filtered through
+observation lifecycle status **after** fusion, so retracted, expired, or
+deleted memories can never surface no matter how a tier ranked them. Vector
+hits worse than `SUPERMEM_VECTOR_MAX_DISTANCE` (cosine distance, default 0.35)
+are dropped so out-of-scope queries don't return nearest-neighbour noise.
 
 ---
 
@@ -172,7 +185,15 @@ summaries = await list_day_summaries(days=7)
 | `SUPERMEM_LLM_MODEL` | provider default | Model string (e.g. `openai/gpt-4o-mini`, `llama3`) |
 | `SUPERMEM_DB_PATH` | `~/.supermem/supermem.db` | SQLite database path |
 | `SUPERMEM_VAULT_PATH` | `.memory_path` file | Markdown vault directory |
-| `SUPERMEM_VECTOR` | `false` | Set `true` to enable ChromaDB tier |
+| `SUPERMEM_VECTOR` | `false` | Set `true` to enable the vector tier |
+| `SUPERMEM_VECTOR_BACKEND` | `""` (auto) | `sqlite` (default when sqlite-vec installed) \| `chroma` (optional `vector` extra) \| `none` |
+| `SUPERMEM_VECTORS_PATH` | beside `SUPERMEM_DB_PATH` | sqlite-vec store path (`vectors.db`) |
+| `SUPERMEM_VECTOR_MAX_DISTANCE` | `0.35` | Cosine-distance floor for vector hits (`off` disables); calibrated for the default model |
+| `SUPERMEM_EMBEDDING_PROVIDER` | `""` (auto) | `fastembed` (default) \| `local-endpoint` (OpenAI-compatible) |
+| `SUPERMEM_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the fastembed provider |
+| `SUPERMEM_EMBEDDING_BASE_URL` | `http://localhost:1234/v1` | Base URL for the local-endpoint provider |
+| `SUPERMEM_RERANKER` | `false` | Enable local cross-encoder rerank of top-50 fused candidates (fastembed, ~80MB ONNX on first use) |
+| `SUPERMEM_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Reranker model |
 | `SUPERMEM_DEFAULT_TIER_LIMIT` | `3` | Default lifecycle-aware retrieval ceiling; values above 3 are capped |
 | `SUPERMEM_API_KEY` | _(none)_ | Bearer token required for primary MCP HTTP and protected Worker HTTP endpoints (fail closed if unset) |
 | `SUPERMEM_RATE_LIMIT` | `60` | Requests/minute limit per client identity across MCP tools |
@@ -263,7 +284,7 @@ issued. Clients needing persistent protocol sessions should use local stdio.
 ## Privacy and Security
 
 Wrap sensitive content in `<private>...</private>` tags. It is stripped before
-writing to any storage layer (SQLite, Kuzu, ChromaDB). Raw Agent vault content
+writing to any storage layer (SQLite, Kuzu, vector store). Raw Agent vault content
 and metadata inspection are unavailable until a source-aware lifecycle broker
 exists. The restricted executor is not a hostile-code sandbox; remote execution
 remains unsupported.
