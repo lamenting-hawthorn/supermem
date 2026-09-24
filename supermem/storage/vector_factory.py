@@ -130,14 +130,21 @@ class LocalEndpointEmbeddingFunction:
 
     def _ensure_client(self) -> Any:
         if self._client is None:
+            import httpx
             from openai import OpenAI
 
+            # No keepalive pooling: NATs/VPNs reset idle pooled connections and
+            # the next request dies with APIConnectionError. A fresh connection
+            # per request is the robust default for intermittent endpoints.
             self._client = OpenAI(
                 base_url=self._base_url,
                 api_key=(
                     os.getenv("SUPERMEM_EMBEDDING_API_KEY")
                     or os.getenv("OPENAI_API_KEY")
                     or "local-not-required"
+                ),
+                http_client=httpx.Client(
+                    limits=httpx.Limits(max_keepalive_connections=0)
                 ),
             )
         return self._client
