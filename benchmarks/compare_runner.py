@@ -35,6 +35,9 @@ from benchmarks.oracle import CaseVerdict, judge_case
 from benchmarks.scoring import (
     citation_coverage,
     citation_verification_rate,
+    context_rot,
+    context_stats,
+    estimate_tokens,
     latency_percentiles,
     mrr,
     precision_at_k,
@@ -176,6 +179,10 @@ async def run_adapter_suite(
                         "passed": passed,
                         "reasons": verdict.reasons,
                         "n_results": len(results),
+                        "context_chars": sum(len(r.content) for r in results),
+                        "context_tokens_est": estimate_tokens(
+                            sum(len(r.content) for r in results)
+                        ),
                         "latency_ms": round(dt_ms, 3),
                     }
                 )
@@ -202,6 +209,10 @@ async def run_adapter_suite(
                     "passed": passed,
                     "reasons": verdict.reasons,
                     "n_results": len(results),
+                    "context_chars": sum(len(r.content) for r in results),
+                    "context_tokens_est": estimate_tokens(
+                        sum(len(r.content) for r in results)
+                    ),
                     "latency_ms": round(dt_ms, 3),
                 }
             )
@@ -225,6 +236,8 @@ async def run_adapter_suite(
         "unknown_contamination": unknown_contamination(cases, results_by_query_id),
         "citation_coverage": citation_coverage(last_results_flat),
         "citation_verification_rate": citation_verification_rate(verdict_objects),
+        "context": context_stats(cases, results_by_query_id, k),
+        "context_rot": context_rot(cases, results_by_query_id, k),
         "latency": latency_percentiles(latencies),
         "variance_rate": variance_rate(repeat_outcomes),
         "wall_seconds": round(wall_seconds, 3),
@@ -288,6 +301,9 @@ def _write_report(path: Path, suite: dict) -> None:
         f"| unknown contamination | {m['unknown_contamination']} |",
         f"| citation coverage | {m['citation_coverage']} |",
         f"| citation verification | {m['citation_verification_rate']} |",
+        f"| context avg chars / tokens(est) | {m['context']['avg_context_chars']} / {m['context']['avg_context_tokens_est']} |",
+        f"| context tokens(est) per recall | {m['context']['avg_context_tokens_per_recall']} |",
+        f"| context rot (small→large Δrecall, detected) | {m['context_rot']['recall_delta']} / {m['context_rot']['detected']} |",
         f"| latency p50/p95/p99 ms | {m['latency']['p50']:.2f} / {m['latency']['p95']:.2f} / {m['latency']['p99']:.2f} |",
         f"| replay variance rate | {m['variance_rate']} |",
         "",
