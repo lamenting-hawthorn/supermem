@@ -95,6 +95,22 @@ class FastembedEmbeddingFunction:
         docs = list(input)
         return [[float(x) for x in vec] for vec in self._model.embed(docs)]
 
+    def query_embed(self, input: Any) -> list[list[float]]:  # noqa: A002
+        """Query-side embedding for asymmetric retrieval.
+
+        fastembed's ``query_embed`` prepends the model's retrieval
+        instruction prefix (e.g. BGE's "Represent this sentence for
+        searching relevant passages: ...") — embedding queries with plain
+        ``embed()`` loses that signal and badly degrades question→document
+        ranking. Falls back to plain ``embed()`` when the model does not
+        support a query path.
+        """
+        queries = list(input)
+        embed_query = getattr(self._model, "query_embed", None)
+        if callable(embed_query):
+            return [[float(x) for x in vec] for vec in embed_query(queries)]
+        return self(queries)
+
 
 class LocalEndpointEmbeddingFunction:
     """OpenAI-compatible /embeddings client (LM Studio, Ollama serve, ...).
