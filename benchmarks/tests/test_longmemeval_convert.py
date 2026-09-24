@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from benchmarks.adapters.longmemeval_convert import convert, main, parse_epoch
+from benchmarks.adapters.longmemeval_convert import (
+    CONVERTER_VERSION,
+    convert,
+    main,
+    parse_epoch,
+)
 from benchmarks.harness_types import load_cases, load_manifest
 
 SAMPLE_RECORDS = [
@@ -118,6 +125,38 @@ def test_max_cases_cap(input_jsonl: Path, tmp_path: Path) -> None:
     stats = convert(input_jsonl, outdir, max_cases=1)
     assert stats["n_cases_out"] == 1
     assert len(load_cases(outdir)) == 1
+
+
+def test_question_type_carried_into_expected(input_jsonl: Path, tmp_path: Path) -> None:
+    outdir = tmp_path / "out"
+    convert(input_jsonl, outdir)
+    cases = {c.query_id: c for c in load_cases(outdir)}
+    assert cases["lm-1"].expected.question_type == "multi-session"
+    assert cases["lm-2"].expected.question_type == "abstention"
+    assert cases["lm-3"].expected.question_type == "temporal_reasoning"
+
+
+def test_manifest_pins_source_and_converter(input_jsonl: Path, tmp_path: Path) -> None:
+    outdir = tmp_path / "out"
+    convert(input_jsonl, outdir)
+    manifest = load_manifest(outdir)
+    assert manifest["name"] == "out"
+    assert manifest["source_dataset"] == input_jsonl.name
+    assert (
+        manifest["source_sha256"]
+        == hashlib.sha256(input_jsonl.read_bytes()).hexdigest()
+    )
+    assert manifest["n_records_in"] == 3
+    assert manifest["n_cases"] == 3
+    assert manifest["converter"] == "benchmarks.adapters.longmemeval_convert"
+    assert manifest["converter_version"] == CONVERTER_VERSION
+    assert manifest["question_type_counts"] == {
+        "multi-session": 1,
+        "abstention": 1,
+        "temporal_reasoning": 1,
+    }
+    # ISO-8601 generation timestamp.
+    datetime.fromisoformat(manifest["generated_at"])
 
 
 def test_cli_missing_input_returns_2() -> None:

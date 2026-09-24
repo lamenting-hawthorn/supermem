@@ -90,9 +90,7 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             # :free variant, which is throttled at the upstream provider
             # regardless of OpenRouter tier (connection resets mid-ingest).
             # qwen3-embedding-8b is a paid route — stable and ~$0.25/corpus.
-            os.environ.setdefault(
-                "SUPERMEM_EMBEDDING_MODEL", "qwen/qwen3-embedding-8b"
-            )
+            os.environ.setdefault("SUPERMEM_EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
             if os.getenv("OPENROUTER_API_KEY"):
                 os.environ.setdefault(
                     "SUPERMEM_EMBEDDING_API_KEY", os.environ["OPENROUTER_API_KEY"]

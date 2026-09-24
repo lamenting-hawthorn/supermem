@@ -60,6 +60,10 @@ class ExpectedOutcome:
     # result whose source_uri is in this set. When present, it is the primary
     # oracle; must_include remains a secondary verbatim-content diagnostic.
     source_uris: list[str] = field(default_factory=list)
+    # Source-benchmark question type (e.g. LongMemEval "multi-session"),
+    # carried through conversion so metrics can break down by it. None for
+    # datasets that do not carry a question taxonomy.
+    question_type: str | None = None
     phase: int = 1
 
 
@@ -86,6 +90,7 @@ class BenchmarkCase:
             expect_empty=bool(exp_raw.get("expect_empty", False)),
             source_uri=exp_raw.get("source_uri"),
             source_uris=list(exp_raw.get("source_uris", [])),
+            question_type=exp_raw.get("question_type"),
             phase=int(exp_raw.get("phase", 1)),
         )
         tb = raw.get("temporal_bound")

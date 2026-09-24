@@ -7,11 +7,18 @@ returning 0.0 instead of raising.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from benchmarks.harness_types import BenchmarkCase, CitedResult
 from benchmarks.oracle import CaseVerdict
 
 Results = dict[str, list[CitedResult]]
+
+# Recall cutoffs scored from a single rank-ordered result list. Cutoffs past
+# the retrieved depth score against however many results exist — retrieve
+# with k >= max(RECALL_CUTOFFS) when all entries should be meaningful.
+RECALL_CUTOFFS = (1, 3, 5, 10, 30, 50)
 
 _PROHIBITED_MAP = {
     "stale": "source_modified",
@@ -52,27 +59,113 @@ def _is_relevant(case: BenchmarkCase, res: CitedResult) -> bool:
     return any(m in res.content for m in case.expected.must_include)
 
 
+def _recall_hit(case: BenchmarkCase, top: list[CitedResult]) -> bool:
+    """Top-k hit: any evidence session (recall_any) or all needles present."""
+    if case.expected.source_uris:
+        # Session-level recall_any: any evidence-session hit in top-k.
+        return any(_is_relevant(case, r) for r in top)
+    contents = [r.content for r in top]
+    return all(any(m in c for c in contents) for m in case.expected.must_include)
+
+
 def recall_at_k(
     cases: list[BenchmarkCase], results_by_query_id: Results, k: int
 ) -> float:
-    """Fraction of non-expect_empty cases where all must_include are in top-k."""
+    """Fraction of non-expect_empty cases hit in the top-k results."""
     applicable = [
         (case, results[: max(k, 0)])
         for case, results, _ in _applicable(cases, results_by_query_id)
     ]
     if not applicable:
         return 0.0
-    hits = 0
-    for case, top in applicable:
-        if case.expected.source_uris:
-            # Session-level recall_any: any evidence-session hit in top-k.
-            if any(_is_relevant(case, r) for r in top):
-                hits += 1
-        else:
-            contents = [r.content for r in top]
-            if all(any(m in c for c in contents) for m in case.expected.must_include):
-                hits += 1
+    hits = sum(1 for case, top in applicable if _recall_hit(case, top))
     return hits / len(applicable)
+
+
+def recall_at_k_multi(
+    cases: list[BenchmarkCase],
+    results_by_query_id: Results,
+    ks: Iterable[int] = RECALL_CUTOFFS,
+) -> dict[str, float]:
+    """recall_any at several cutoffs from one rank-ordered result list.
+
+    Uses the same truncated-at-k view as ``recall_at_k``, so
+    ``recall_at_k_multi(cases, res)[str(k)] == recall_at_k(cases, res, k)``.
+    Multi-k separates ranking failures (hit at 30, miss at 10) from
+    retrieval failures (miss at 50). Cutoffs past the retrieved depth score
+    against however many results were returned.
+    """
+    applicable = [
+        (case, results) for case, results, _ in _applicable(cases, results_by_query_id)
+    ]
+    out: dict[str, float] = {}
+    for k in ks:
+        kk = max(k, 0)
+        hits = sum(1 for case, results in applicable if _recall_hit(case, results[:kk]))
+        out[str(k)] = hits / len(applicable) if applicable else 0.0
+    return out
+
+
+def ndcg_at_k(
+    cases: list[BenchmarkCase], results_by_query_id: Results, k: int = 10
+) -> float:
+    """Mean NDCG@k over applicable cases with binary per-rank relevance.
+
+    A rank is relevant when the result cites an evidence session
+    (``expected.source_uris``; each session credited once — re-citing the
+    same session adds nothing) or, for needle-only cases, when its content
+    carries a ``must_include`` term. DCG@k = Σ rel/log2(rank+1); IDCG@k is
+    the best possible ordering given the number of evidence items — the
+    count of distinct evidence sessions, else the needle count.
+    """
+    applicable = _applicable(cases, results_by_query_id)
+    if not applicable:
+        return 0.0
+    kk = max(k, 0)
+    total = 0.0
+    for case, results, _ in applicable:
+        seen_sessions: set[str] = set()
+        dcg = 0.0
+        for rank, res in enumerate(results[:kk], start=1):
+            if not _is_relevant(case, res):
+                continue
+            if case.expected.source_uris:
+                if res.source_uri in seen_sessions:
+                    continue
+                seen_sessions.add(res.source_uri)
+            dcg += 1.0 / math.log2(rank + 1)
+        n_ideal = (
+            len(set(case.expected.source_uris))
+            if case.expected.source_uris
+            else len(case.expected.must_include)
+        )
+        idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(n_ideal, kk) + 1))
+        if idcg > 0:
+            total += dcg / idcg
+    return total / len(applicable)
+
+
+def recall_by_question_type(
+    cases: list[BenchmarkCase], results_by_query_id: Results, k: int
+) -> dict[str, dict[str, float | int]]:
+    """recall@k grouped by ``expected.question_type`` (LongMemEval types).
+
+    Only cases that participate in recall (non-expect_empty with a recall
+    signal) count toward a bucket's ``n``; cases without a question_type
+    land under ``"unknown"``.
+    """
+    groups: dict[str, list[tuple[BenchmarkCase, list[CitedResult]]]] = {}
+    for case, results, _ in _applicable(cases, results_by_query_id):
+        key = case.expected.question_type or "unknown"
+        groups.setdefault(key, []).append((case, results))
+    out: dict[str, dict[str, float | int]] = {}
+    for key in sorted(groups):
+        sub = groups[key]
+        hits = sum(
+            1 for case, results in sub if _recall_hit(case, results[: max(k, 0)])
+        )
+        out[key] = {"recall_at_k": hits / len(sub), "n": len(sub)}
+    return out
 
 
 def precision_at_k(
@@ -317,3 +410,20 @@ def variance_rate(repeat_outcomes: list[list[bool]]) -> float:
         if len(column) > 1:
             varying += 1
     return varying / width
+
+
+def receipt_header(metrics: Mapping[str, Any]) -> str:
+    """MemScore-style headline triple: recall / p50 latency / context tokens.
+
+    Reads the aggregate metrics dict (``recall_at_k``, ``latency.p50``,
+    ``context.avg_context_tokens_est``) and renders the one-line receipt
+    header, e.g. ``recall@k 0.833 / p50 12.4ms / 1832tok``. Missing context
+    stats render the token leg as ``n/a``.
+    """
+    recall = metrics.get("recall_at_k") or 0.0
+    latency = metrics.get("latency") or {}
+    p50 = latency.get("p50") or 0.0
+    context = metrics.get("context") or {}
+    tokens = context.get("avg_context_tokens_est")
+    tok = f"{float(tokens):.0f}tok" if isinstance(tokens, (int, float)) else "n/a"
+    return f"recall@k {float(recall):.3f} / p50 {float(p50):.1f}ms / {tok}"

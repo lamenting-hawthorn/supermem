@@ -16,11 +16,17 @@ Each record's haystack sessions are rendered as Markdown under
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Converter output-version note recorded in manifest.json so generated
+# datasets are self-describing (bump when the emitted case/manifest schema
+# or conversion semantics change).
+CONVERTER_VERSION = "0.2"
 
 QUESTION_TYPES_WITH_DEFAULT = {
     "single-session-user",
@@ -187,6 +193,15 @@ def map_case_type(question_type: str | None) -> tuple[str, bool]:
     return "exact_positive", False
 
 
+def _sha256_of(path: Path) -> str:
+    """Streaming SHA256 of the input file for manifest pinning."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def convert(
     input_path: Path,
     outdir: Path,
@@ -276,6 +291,9 @@ def convert(
 
             expected: dict = {
                 "case_type": case_type,
+                # Original LongMemEval taxonomy, kept for per-type metric
+                # breakdowns (case_type is the coarser BM-0 mapping).
+                "question_type": question_type_key,
                 "must_include": [],
                 "must_exclude": [],
                 "expect_empty": expect_empty,
@@ -349,13 +367,24 @@ def convert(
             cases_lines.append(json.dumps(case, ensure_ascii=False))
             n_cases_out += 1
 
+    # Pin the conversion inputs so every generated dataset is
+    # self-describing: which source file, its content hash, when, and with
+    # which converter version (original vs cleaned LongMemEval scores are
+    # not comparable — the source identity is part of the number).
     manifest = {
-        "name": "longmemeval-subset",
-        "version": "0.1",
+        "name": outdir.name,
+        "version": "0.2",
         "description": "LongMemEval questions converted to BM-0 retrieval cases; sources are rendered session transcripts.",
         "mutations": [],
         "source": "LongMemEval (https://hqsiswiliam.github.io/longmemeval/) converted",
+        "source_dataset": input_path.name,
+        "source_sha256": _sha256_of(input_path),
+        "n_records_in": n_records_in,
         "n_cases": n_cases_out,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "converter": "benchmarks.adapters.longmemeval_convert",
+        "converter_version": CONVERTER_VERSION,
+        "question_type_counts": type_counts,
     }
 
     (outdir / "dataset.jsonl").write_text("\n".join(cases_lines), encoding="utf-8")

@@ -36,6 +36,8 @@ def mk_case(
     must_exclude: list[str] | None = None,
     expect_empty: bool = False,
     max_records: int = 10,
+    source_uris: list[str] | None = None,
+    question_type: str | None = None,
 ) -> BenchmarkCase:
     return BenchmarkCase(
         query_id=query_id,
@@ -46,6 +48,8 @@ def mk_case(
             must_include=must_include or [],
             must_exclude=must_exclude or [],
             expect_empty=expect_empty,
+            source_uris=source_uris or [],
+            question_type=question_type,
         ),
     )
 
@@ -81,6 +85,149 @@ class TestRecallAtK:
     def test_missing_query_id_counts_against_recall(self):
         cases = [mk_case("q1", must_include=["alpha"])]
         assert scoring.recall_at_k(cases, {}, 3) == 0.0
+
+
+class TestRecallAtKMulti:
+    def test_source_uris_hit_at_each_cutoff(self):
+        # Evidence session at rank 3: misses below k=3, hits from k=3 on.
+        cases = [mk_case("q1", source_uris=["s/evidence.md"])]
+        results = {
+            "q1": [
+                mk_result("m1", uri="s/noise1.md"),
+                mk_result("m2", uri="s/noise2.md"),
+                mk_result("m3", uri="s/evidence.md"),
+            ]
+        }
+        multi = scoring.recall_at_k_multi(cases, results)
+        assert set(multi) == {"1", "3", "5", "10", "30", "50"}
+        assert multi["1"] == 0.0
+        assert multi["3"] == 1.0
+        assert multi["50"] == 1.0
+
+    def test_matches_recall_at_k_at_every_cutoff(self):
+        cases = [
+            mk_case("q1", source_uris=["s/ev1.md"]),
+            mk_case("q2", must_include=["needle"]),
+        ]
+        results = {
+            "q1": [mk_result("m1", uri="s/noise.md"), mk_result("m2", uri="s/ev1.md")],
+            "q2": [mk_result("m3", "needle here")],
+        }
+        multi = scoring.recall_at_k_multi(cases, results)
+        for key, value in multi.items():
+            assert value == scoring.recall_at_k(cases, results, int(key))
+
+    def test_custom_cutoffs_and_empty(self):
+        cases = [mk_case("q1", must_include=["alpha"])]
+        results = {"q1": [mk_result("m1", "alpha fact")]}
+        assert scoring.recall_at_k_multi(cases, results, ks=[2, 7]) == {
+            "2": 1.0,
+            "7": 1.0,
+        }
+        assert scoring.recall_at_k_multi([], {}) == {
+            str(k): 0.0 for k in scoring.RECALL_CUTOFFS
+        }
+
+
+class TestNdcgAtK:
+    def test_ideal_ordering_scores_one(self):
+        # Both evidence sessions ranked first → DCG == IDCG.
+        cases = [mk_case("q1", source_uris=["s/e1.md", "s/e2.md"])]
+        results = {
+            "q1": [
+                mk_result("m1", uri="s/e1.md"),
+                mk_result("m2", uri="s/e2.md"),
+                mk_result("m3", uri="s/noise.md"),
+            ]
+        }
+        assert scoring.ndcg_at_k(cases, results, 10) == pytest.approx(1.0)
+
+    def test_late_hit_scores_below_one(self):
+        # e1 at rank 1, e2 at rank 3; ideal puts both at ranks 1-2.
+        cases = [mk_case("q1", source_uris=["s/e1.md", "s/e2.md"])]
+        results = {
+            "q1": [
+                mk_result("m1", uri="s/e1.md"),
+                mk_result("m2", uri="s/noise.md"),
+                mk_result("m3", uri="s/e2.md"),
+            ]
+        }
+        dcg = 1.0 + 1.0 / 2.0  # log2(2)=1, log2(4)=2
+        idcg = 1.0 + 1.0 / 1.584962500721156  # log2(3)
+        assert scoring.ndcg_at_k(cases, results, 10) == pytest.approx(dcg / idcg)
+
+    def test_no_evidence_scores_zero(self):
+        cases = [mk_case("q1", source_uris=["s/e1.md"])]
+        results = {"q1": [mk_result("m1", uri="s/noise.md")]}
+        assert scoring.ndcg_at_k(cases, results, 10) == 0.0
+        assert scoring.ndcg_at_k(cases, {}, 10) == 0.0
+
+    def test_repeated_session_cited_once(self):
+        # All three results cite the single evidence session: without
+        # dedup DCG would exceed IDCG (NDCG > 1).
+        cases = [mk_case("q1", source_uris=["s/e1.md"])]
+        results = {
+            "q1": [
+                mk_result("m1", uri="s/e1.md"),
+                mk_result("m2", uri="s/e1.md"),
+                mk_result("m3", uri="s/e1.md"),
+            ]
+        }
+        assert scoring.ndcg_at_k(cases, results, 10) == pytest.approx(1.0)
+
+    def test_k_truncates(self):
+        cases = [mk_case("q1", source_uris=["s/e1.md"])]
+        results = {
+            "q1": [
+                mk_result("m1", uri="s/noise.md"),
+                mk_result("m2", uri="s/noise.md"),
+                mk_result("m3", uri="s/e1.md"),
+            ]
+        }
+        assert scoring.ndcg_at_k(cases, results, 2) == 0.0
+        assert scoring.ndcg_at_k(cases, results, 3) == pytest.approx(0.5)
+
+    def test_needle_cases_and_empty(self):
+        cases = [mk_case("q1", must_include=["alpha", "beta"])]
+        results = {"q1": [mk_result("m1", "alpha here"), mk_result("m2", "beta too")]}
+        assert scoring.ndcg_at_k(cases, results, 2) == pytest.approx(1.0)
+        assert scoring.ndcg_at_k([], {}, 10) == 0.0
+
+
+class TestRecallByQuestionType:
+    def test_groups_by_question_type(self):
+        cases = [
+            mk_case("q1", source_uris=["s/e1.md"], question_type="multi-session"),
+            mk_case("q2", source_uris=["s/e2.md"], question_type="multi-session"),
+            mk_case("q3", source_uris=["s/e3.md"], question_type="single-session-user"),
+        ]
+        results = {
+            "q1": [mk_result("m1", uri="s/e1.md")],
+            "q2": [mk_result("m2", uri="s/noise.md")],
+            "q3": [mk_result("m3", uri="s/e3.md")],
+        }
+        by_type = scoring.recall_by_question_type(cases, results, 10)
+        assert by_type["multi-session"] == {"recall_at_k": 0.5, "n": 2}
+        assert by_type["single-session-user"] == {"recall_at_k": 1.0, "n": 1}
+
+    def test_missing_type_falls_back_to_unknown(self):
+        cases = [mk_case("q1", must_include=["alpha"])]
+        results = {"q1": [mk_result("m1", "alpha fact")]}
+        by_type = scoring.recall_by_question_type(cases, results, 10)
+        assert by_type == {"unknown": {"recall_at_k": 1.0, "n": 1}}
+
+    def test_expect_empty_cases_excluded(self):
+        cases = [
+            mk_case("q1", expect_empty=True, question_type="abstention"),
+            mk_case("q2", must_include=["x"], question_type="abstention"),
+        ]
+        results = {"q1": [mk_result("m1")], "q2": [mk_result("m2", "x here")]}
+        by_type = scoring.recall_by_question_type(cases, results, 10)
+        # Only the non-expect_empty case is scored.
+        assert by_type == {"abstention": {"recall_at_k": 1.0, "n": 1}}
+
+    def test_empty(self):
+        assert scoring.recall_by_question_type([], {}, 10) == {}
 
 
 class TestPrecisionAtK:
@@ -234,6 +381,25 @@ class TestVarianceRate:
         assert scoring.variance_rate([]) == 0.0
 
 
+class TestReceiptHeader:
+    def test_renders_triple(self):
+        metrics = {
+            "recall_at_k": 0.8333,
+            "latency": {"p50": 12.34, "p95": 20.0, "p99": 30.0},
+            "context": {"avg_context_tokens_est": 1832.4},
+        }
+        assert (
+            scoring.receipt_header(metrics) == "recall@k 0.833 / p50 12.3ms / 1832tok"
+        )
+
+    def test_missing_sections_render_zero_or_na(self):
+        assert scoring.receipt_header({}) == "recall@k 0.000 / p50 0.0ms / n/a"
+        assert (
+            scoring.receipt_header({"recall_at_k": 1.0, "latency": {}, "context": {}})
+            == "recall@k 1.000 / p50 0.0ms / n/a"
+        )
+
+
 class TestEmptyInputSafety:
     @pytest.mark.parametrize(
         "fn",
@@ -241,6 +407,7 @@ class TestEmptyInputSafety:
             lambda: scoring.recall_at_k([], {}, 5),
             lambda: scoring.precision_at_k([], {}, 5),
             lambda: scoring.mrr([], {}),
+            lambda: scoring.ndcg_at_k([], {}, 10),
             lambda: scoring.unknown_contamination([], {}),
         ],
     )
