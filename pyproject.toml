@@ -1,6 +1,6 @@
 [project]
 name = "supermem"
-version = "0.3.1"
+version = "0.4.0"
 description = "Persistent AI memory without RAG — lifecycle-aware local retrieval"
 readme = "README.md"
 license = { text = "Apache-2.0" }
