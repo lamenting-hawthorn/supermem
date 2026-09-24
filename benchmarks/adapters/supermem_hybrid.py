@@ -64,6 +64,38 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             setattr(_rerank_mod, "RERANKER_ENABLED", True)
         except ImportError:
             pass
+        # Optional remote reranker: inject an OpenRouter /rerank scorer into
+        # the product Reranker's scorer slot (built for tests). Enabled with
+        # SUPERMEM_BENCH_REMOTE_RERANK=1; local fastembed otherwise.
+        if os.getenv("SUPERMEM_BENCH_REMOTE_RERANK") in ("1", "true"):
+            from benchmarks.adapters.openrouter_rerank import (
+                openrouter_rerank_scorer,
+            )
+
+            scorer = openrouter_rerank_scorer()
+            if scorer is not None:
+                import supermem.retrieval.rerank as _rr2
+                from supermem.retrieval.rerank import Reranker
+
+                _rr2._reranker_singleton = Reranker(scorer=scorer)
+        # Optional remote embeddings: SUPERMEM_BENCH_REMOTE_EMBED=1 routes the
+        # embedder through an OpenAI-compatible endpoint (OpenRouter by
+        # default). Provider env is read live at get_embedder() call time.
+        if os.getenv("SUPERMEM_BENCH_REMOTE_EMBED") in ("1", "true"):
+            os.environ.setdefault("SUPERMEM_EMBEDDING_PROVIDER", "local-endpoint")
+            os.environ.setdefault(
+                "SUPERMEM_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"
+            )
+            os.environ.setdefault(
+                "SUPERMEM_EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b:free"
+            )
+            if os.getenv("OPENROUTER_API_KEY"):
+                os.environ.setdefault(
+                    "SUPERMEM_EMBEDDING_API_KEY", os.environ["OPENROUTER_API_KEY"]
+                )
+            # input_type is a module-level config attr read at call time.
+            if os.getenv("SUPERMEM_BENCH_EMBED_INPUT_TYPE") in ("1", "true"):
+                setattr(_config, "SUPERMEM_EMBEDDING_INPUT_TYPE", True)
         _config.SUPERMEM_VECTORS_PATH = workspace / "vectors.db"
         try:
             self._vector = create_vector_manager()
