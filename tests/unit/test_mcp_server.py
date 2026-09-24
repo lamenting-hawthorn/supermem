@@ -15,6 +15,7 @@ TODO(arch): Long-term, extract global state into a ServerContext dataclass
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -191,13 +192,12 @@ class TestAuthOk:
 
 
 class TestSupermemHybridTool:
-    """supermem_hybrid() tool handler."""
+    """supermem_hybrid() tool handler — returns structuredContent (dict)."""
 
     @pytest.mark.asyncio
     async def test_returns_error_when_retriever_none(self, monkeypatch):
         monkeypatch.setattr(srv._ctx, "retriever", None)
-        result = await srv.supermem_hybrid.fn("test query", ctx=_stdio_context())
-        data = json.loads(result)
+        data = await srv.supermem_hybrid.fn("test query", ctx=_stdio_context())
         assert "error" in data
         assert data["obs_ids"] == []
 
@@ -212,8 +212,7 @@ class TestSupermemHybridTool:
             {"id": 2, "content": "Bob is her manager"},
         ]
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("alice", ctx=_stdio_context())
-        data = json.loads(result)
+        data = await srv.supermem_hybrid.fn("alice", ctx=_stdio_context())
         assert data["source_tier"] == 1
         assert data["obs_ids"] == [1, 2]
         assert len(data["observations"]) == 2
@@ -223,8 +222,7 @@ class TestSupermemHybridTool:
         mock_ret = AsyncMock()
         mock_ret.search.side_effect = RuntimeError("db connection lost")
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("broken query", ctx=_stdio_context())
-        data = json.loads(result)
+        data = await srv.supermem_hybrid.fn("broken query", ctx=_stdio_context())
         assert "error" in data
 
     @pytest.mark.asyncio
@@ -234,10 +232,137 @@ class TestSupermemHybridTool:
             obs_ids=[], source_tier=0, latency_ms=0.1
         )
         monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
-        result = await srv.supermem_hybrid.fn("zzznomatch", ctx=_stdio_context())
-        data = json.loads(result)
+        data = await srv.supermem_hybrid.fn("zzznomatch", ctx=_stdio_context())
         assert data["obs_ids"] == []
         assert data["observations"] == []
+
+
+class TestStructuredCitations:
+    """Digest-verifiable citations via MCP structuredContent."""
+
+    def _vault_row(self, tmp_path, content: str, **over):
+        (tmp_path / "entities").mkdir(exist_ok=True)
+        f = tmp_path / "entities" / "alice.md"
+        f.write_text(content, encoding="utf-8")
+        row = {
+            "id": 1,
+            "content": content,
+            "content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            "source_id": "entities/alice",
+            "source_span": "entities/alice.md#whole",
+        }
+        row.update(over)
+        return row, f
+
+    @pytest.mark.asyncio
+    async def test_hybrid_emits_verified_citation(self, monkeypatch, tmp_path):
+        row, f = self._vault_row(tmp_path, "Alice works at Acme")
+        monkeypatch.setattr(srv, "SUPERMEM_VAULT_PATH", tmp_path)
+        mock_ret = AsyncMock()
+        mock_ret.search.return_value = RetrievalResult(
+            obs_ids=[1], source_tier=1, latency_ms=0.5
+        )
+        mock_ret.get_observations.return_value = [row]
+        monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
+
+        data = await srv.supermem_hybrid.fn("alice", ctx=_stdio_context())
+        cit = data["observations"][0]["citation"]
+        assert cit["source_uri"] == "entities/alice.md"
+        assert cit["source_span"] == "entities/alice.md#whole"
+        assert cit["source_revision"] is None
+        assert cit["source_digest"] == hashlib.sha256(f.read_bytes()).hexdigest()
+        assert cit["content_verified"] is True
+        assert cit["source_verified"] is True
+        assert cit["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_citation_unverified_when_source_deleted(self, monkeypatch, tmp_path):
+        row, f = self._vault_row(tmp_path, "Alice works at Acme")
+        f.unlink()
+        monkeypatch.setattr(srv, "SUPERMEM_VAULT_PATH", tmp_path)
+        mock_ret = AsyncMock()
+        mock_ret.search.return_value = RetrievalResult(
+            obs_ids=[1], source_tier=1, latency_ms=0.5
+        )
+        mock_ret.get_observations.return_value = [row]
+        monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
+
+        data = await srv.supermem_hybrid.fn("alice", ctx=_stdio_context())
+        cit = data["observations"][0]["citation"]
+        assert cit["source_digest"] is None
+        assert cit["source_verified"] is False
+        assert cit["verified"] is False
+
+    @pytest.mark.asyncio
+    async def test_citation_without_source_is_content_verified(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(srv, "SUPERMEM_VAULT_PATH", tmp_path)
+        content = "ad-hoc memory with no source"
+        row = {
+            "id": 9,
+            "content": content,
+            "content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            "source_id": None,
+            "source_span": None,
+        }
+        mock_ret = AsyncMock()
+        mock_ret.search.return_value = RetrievalResult(
+            obs_ids=[9], source_tier=1, latency_ms=0.5
+        )
+        mock_ret.get_observations.return_value = [row]
+        monkeypatch.setattr(srv._ctx, "retriever", mock_ret)
+
+        data = await srv.supermem_hybrid.fn("adhoc", ctx=_stdio_context())
+        cit = data["observations"][0]["citation"]
+        assert cit["source_uri"] is None
+        assert cit["source_verified"] is None
+        assert cit["content_verified"] is True
+        assert cit["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_verify_citation_valid(self, monkeypatch, tmp_path):
+        row, f = self._vault_row(tmp_path, "Alice works at Acme")
+        monkeypatch.setattr(srv, "SUPERMEM_VAULT_PATH", tmp_path)
+        mock_db = AsyncMock()
+        mock_db.get_observations.return_value = [row]
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+
+        data = await srv.verify_citation.fn(
+            obs_id=1,
+            source_uri="entities/alice.md",
+            source_digest=hashlib.sha256(f.read_bytes()).hexdigest(),
+            ctx=_stdio_context(),
+        )
+        assert data["valid"] is True
+        assert data["reasons"] == []
+
+    @pytest.mark.asyncio
+    async def test_verify_citation_detects_tampered_claims(self, monkeypatch, tmp_path):
+        row, _f = self._vault_row(tmp_path, "Alice works at Acme")
+        monkeypatch.setattr(srv, "SUPERMEM_VAULT_PATH", tmp_path)
+        mock_db = AsyncMock()
+        mock_db.get_observations.return_value = [row]
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+
+        data = await srv.verify_citation.fn(
+            obs_id=1,
+            source_uri="entities/bob.md",
+            source_digest="0" * 64,
+            ctx=_stdio_context(),
+        )
+        assert data["valid"] is False
+        assert "source_uri_mismatch" in data["reasons"]
+        assert "source_digest_mismatch" in data["reasons"]
+
+    @pytest.mark.asyncio
+    async def test_verify_citation_unknown_obs(self, monkeypatch):
+        mock_db = AsyncMock()
+        mock_db.get_observations.return_value = []
+        monkeypatch.setattr(srv._ctx, "db", mock_db)
+        data = await srv.verify_citation.fn(obs_id=999, ctx=_stdio_context())
+        assert data["valid"] is False
+        assert "observation_not_found" in data["reasons"]
 
 
 class TestRetractObservationTool:
