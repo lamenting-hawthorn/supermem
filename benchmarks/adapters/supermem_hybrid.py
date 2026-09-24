@@ -86,8 +86,11 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             os.environ.setdefault(
                 "SUPERMEM_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"
             )
+            # Paid route by default: the :free variant is throttled at the
+            # upstream provider regardless of OpenRouter tier (observed as
+            # connection resets mid-ingest). Override via env if needed.
             os.environ.setdefault(
-                "SUPERMEM_EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b:free"
+                "SUPERMEM_EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b"
             )
             if os.getenv("OPENROUTER_API_KEY"):
                 os.environ.setdefault(
