@@ -52,21 +52,40 @@ class VaultIndexer:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def walk(self) -> int:
-        """Full re-index of the vault. Returns count of files indexed."""
+        """Full re-index of the vault. Returns count of files indexed.
+
+        Vector ingestion is deferred and batched across the whole walk:
+        per-file ``to_thread`` embed calls dominate bulk indexing time, so
+        chunk jobs are collected per file and flushed through
+        ``upsert_many`` in one batched pass. Single-file ``index_file``
+        (file-watcher path) keeps inline ingestion.
+        """
         md_files = list(self._vault.rglob("*.md"))
         count = 0
+        vec_jobs: list[tuple[str, str, int]] = []
         for path in md_files:
             try:
-                await self.index_file(path)
+                job = await self._index_file_core(path)
                 count += 1
+                if job is not None:
+                    vec_jobs.append(job)
             except Exception as exc:
                 log.warning("vault_index_file_failed", path=str(path), error=str(exc))
+        await self._ingest_vectors_batch(vec_jobs)
         await self._reconcile_deleted()
         log.info("vault_walk_complete", files=count, vault=str(self._vault))
         return count
 
     async def index_file(self, path: Path) -> None:
         """Index a single markdown file: entity_metadata, Kuzu graph, FTS, vectors."""
+        job = await self._index_file_core(path)
+        if job is not None:
+            entity_name, clean_content, obs_id = job
+            await self._ingest_vectors(entity_name, clean_content, obs_id)
+
+    async def _index_file_core(self, path: Path) -> tuple[str, str, int] | None:
+        """Index a file into metadata/graph/FTS and return the pending vector
+        job ``(entity_name, clean_content, obs_id)`` — or None when skipped."""
         # Skip if file hasn't changed since last index (compare mtime vs last_indexed)
         try:
             mtime = path.stat().st_mtime
@@ -75,7 +94,7 @@ class VaultIndexer:
         entity_name = self._path_to_entity_name(path)
         last_indexed = await self._db.get_entity_last_indexed(entity_name)
         if last_indexed is not None and mtime <= last_indexed:
-            return
+            return None
 
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -108,7 +127,7 @@ class VaultIndexer:
         # Only the newest revision stays active (stale-revision bug, SF-4).
         await self._db.supersede_by_source(entity_name, exclude_id=obs_id)
 
-        await self._ingest_vectors(entity_name, clean_content, obs_id)
+        return entity_name, clean_content, obs_id
 
     async def on_deleted(self, path: Path, entity_name: str | None = None) -> None:
         """Handle deletion of a vault file across all stores. Idempotent.
@@ -182,6 +201,40 @@ class VaultIndexer:
             )
 
     # ── Vector ingestion (best-effort, never raises) ─────────────────────────
+
+    async def _ingest_vectors_batch(self, jobs: list[tuple[str, str, int]]) -> None:
+        """Batched vector ingest for a full walk: chunk every file, then one
+        ``upsert_many`` call so embedding runs in large batches instead of a
+        per-file ``to_thread`` round-trip. Falls back to per-file ingest when
+        the backend lacks ``upsert_many`` (e.g. the Chroma manager)."""
+        if self._vector is None or not self._vector.available or not jobs:
+            return
+        items: list[tuple[list[str], int, str]] = []
+        for entity_name, clean_content, obs_id in jobs:
+            try:
+                chunks = self._chunk_text(clean_content)
+            except Exception as exc:
+                log.warning(
+                    "vault_vector_chunk_failed", entity=entity_name, error=str(exc)
+                )
+                continue
+            if chunks:
+                items.append(([c["text"] for c in chunks], obs_id, entity_name))
+        if not items:
+            return
+        upsert_many = getattr(self._vector, "upsert_many", None)
+        if callable(upsert_many):
+            await upsert_many(items)
+            return
+        for texts, obs_id, entity_name in items:
+            try:
+                await self._vector.upsert_chunks(
+                    chunks=texts, source_uri=entity_name, obs_id=obs_id
+                )
+            except Exception as exc:
+                log.warning(
+                    "vault_vector_ingest_failed", entity=entity_name, error=str(exc)
+                )
 
     async def _ingest_vectors(
         self, entity_name: str, clean_content: str, obs_id: int

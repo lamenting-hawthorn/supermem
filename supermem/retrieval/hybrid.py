@@ -124,9 +124,13 @@ class HybridRetriever:
         t0 = time.monotonic() * 1000
 
         # ── Concurrent content tiers: FTS5 (+ Vector when available) ─────────
-        tasks = [self._fts.search(query, limit=limit)]
+        # Fusion needs deeper candidate pools than the final k: evidence ranked
+        # 11-30 within a leg is otherwise invisible to RRF and can never surface
+        # in the fused top-`limit`.
+        leg_limit = max(limit * 3, 30)
+        tasks = [self._fts.search(query, limit=leg_limit)]
         if tier_limit >= 3 and self._vector.available:
-            tasks.append(self._vector.search(query, limit=limit))
+            tasks.append(self._vector.search(query, limit=leg_limit))
         else:
             log.warning("tier3_skipped", reason="unavailable or above tier_limit")
         r1, *rest = await asyncio.gather(*tasks)

@@ -344,6 +344,48 @@ class SqliteVecManager:
                 error=str(exc),
             )
 
+    async def upsert_many(
+        self, items: list[tuple[list[str], int | None, str | None]]
+    ) -> None:
+        """Bulk variant of ``upsert_chunks`` for vault-scale ingestion.
+
+        ``items`` are ``(chunks, obs_id, source_uri)`` triples. Embeds the
+        flattened chunk list in batches so bulk indexing amortizes model
+        forward-pass setup instead of paying per-file call overhead; writes
+        stay per-source so re-upsert replacement semantics are unchanged.
+        """
+        if not self.available:
+            return
+        assert self._embed_fn is not None
+        flat: list[str] = []
+        spans: list[tuple[int, int, int | None, str | None]] = []
+        for chunks, obs_id, source_uri in items:
+            if not chunks:
+                continue
+            start = len(flat)
+            flat.extend(chunks)
+            spans.append((start, len(flat), obs_id, source_uri))
+        if not flat:
+            return
+        try:
+            vectors: list[list[float]] = []
+            for i in range(0, len(flat), 64):
+                vectors.extend(
+                    await asyncio.to_thread(self._embed_fn, flat[i : i + 64])
+                )
+            for start, end, obs_id, source_uri in spans:
+                await asyncio.to_thread(
+                    self._write_sync,
+                    flat[start:end],
+                    vectors[start:end],
+                    obs_id,
+                    source_uri,
+                )
+        except VectorDimMismatchError:
+            raise
+        except Exception as exc:
+            log.warning("sqlite_vec_upsert_many_failed", error=str(exc))
+
     async def search(
         self,
         query: str,
@@ -365,8 +407,12 @@ class SqliteVecManager:
             return []
         assert self._embed_fn is not None
         cutoff = SUPERMEM_VECTOR_MAX_DISTANCE if max_distance is None else max_distance
+        # Asymmetric retrieval: providers that distinguish query vs passage
+        # embeddings (fastembed's query_embed applies the model's retrieval
+        # prefix, e.g. BGE) must embed queries on the query path.
+        embed_query = getattr(self._embed_fn, "query_embed", self._embed_fn)
         try:
-            qvecs = await asyncio.to_thread(self._embed_fn, [query])
+            qvecs = await asyncio.to_thread(embed_query, [query])
             return await asyncio.to_thread(self._search_sync, qvecs[0], limit, cutoff)
         except Exception as exc:
             log.warning("sqlite_vec_search_failed", error=str(exc))
