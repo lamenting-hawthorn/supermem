@@ -30,17 +30,26 @@ def _applicable(
     cases: list[BenchmarkCase],
     results_by_query_id: Results,
 ) -> list[tuple[BenchmarkCase, list[CitedResult], int]]:
-    """Non-expect_empty cases that have at least one must_include term."""
+    """Non-expect_empty cases with at least one recall signal (verbatim
+    needle or evidence-session URI)."""
     out = []
     for case in cases:
         if case.expected.expect_empty:
             continue
-        if not case.expected.must_include:
+        if not case.expected.must_include and not case.expected.source_uris:
             continue
         results = _results_for(results_by_query_id, case.query_id)
         top_k = min(case.max_records, len(results))
         out.append((case, results, top_k))
     return out
+
+
+def _is_relevant(case: BenchmarkCase, res: CitedResult) -> bool:
+    """A result is relevant when it cites an evidence session (source_uris
+    oracle) or its content carries a must_include needle."""
+    if case.expected.source_uris:
+        return res.source_uri in set(case.expected.source_uris)
+    return any(m in res.content for m in case.expected.must_include)
 
 
 def recall_at_k(
@@ -55,9 +64,14 @@ def recall_at_k(
         return 0.0
     hits = 0
     for case, top in applicable:
-        contents = [r.content for r in top]
-        if all(any(m in c for c in contents) for m in case.expected.must_include):
-            hits += 1
+        if case.expected.source_uris:
+            # Session-level recall_any: any evidence-session hit in top-k.
+            if any(_is_relevant(case, r) for r in top):
+                hits += 1
+        else:
+            contents = [r.content for r in top]
+            if all(any(m in c for c in contents) for m in case.expected.must_include):
+                hits += 1
     return hits / len(applicable)
 
 
@@ -77,8 +91,7 @@ def precision_at_k(
         return 0.0
     relevant = 0
     for case, top in applicable:
-        terms = case.expected.must_include
-        relevant += sum(1 for r in top if any(m in r.content for m in terms))
+        relevant += sum(1 for r in top if _is_relevant(case, r))
     return relevant / total
 
 
@@ -91,10 +104,9 @@ def mrr(cases: list[BenchmarkCase], results_by_query_id: Results) -> float:
         return 0.0
     total = 0.0
     for case, results in applicable:
-        terms = case.expected.must_include
         rr = 0.0
         for rank, res in enumerate(results, start=1):
-            if any(t in res.content for t in terms):
+            if _is_relevant(case, res):
                 rr = 1.0 / rank
                 break
         total += rr

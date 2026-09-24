@@ -54,6 +54,16 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             setattr(_vector_sqlite_mod, "SUPERMEM_VECTOR", True)
         except ImportError:
             pass
+        # Exercise the full product stack: enable the cross-encoder reranker so
+        # the benchmark measures fused-then-reranked retrieval, not just RRF.
+        # Same module-flag convention as SUPERMEM_VECTOR (bound at import).
+        os.environ["SUPERMEM_RERANKER"] = "true"
+        try:
+            import supermem.retrieval.rerank as _rerank_mod
+
+            setattr(_rerank_mod, "RERANKER_ENABLED", True)
+        except ImportError:
+            pass
         _config.SUPERMEM_VECTORS_PATH = workspace / "vectors.db"
         try:
             self._vector = create_vector_manager()

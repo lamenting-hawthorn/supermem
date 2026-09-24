@@ -84,6 +84,22 @@ def judge_case(
             reasons.append(
                 f"expected_empty_but_got_{len(results)}_results: {snippets!r}"
             )
+    elif case.expected.source_uris:
+        # Session-level recall (LongMemEval convention, recall_any): the case
+        # passes when any returned result cites an evidence-bearing session.
+        # must_include still reported as a diagnostic but is not the verdict —
+        # answers are abstractive and rarely appear verbatim in the session.
+        wanted = set(case.expected.source_uris)
+        hit = next((i for i, r in enumerate(results) if r.source_uri in wanted), None)
+        details["session_hit_rank"] = hit
+        if hit is None:
+            reasons.append(
+                f"no evidence session in results (wanted one of {len(wanted)})"
+            )
+        contents = [r.content for r in results]
+        details["must_include_missing"] = [
+            n for n in case.expected.must_include if not any(n in c for c in contents)
+        ]
     else:
         contents = [r.content for r in results]
         for needle in case.expected.must_include:

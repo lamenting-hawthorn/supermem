@@ -97,10 +97,22 @@ def render_session_md(sessions: list, observed_epoch: float | None) -> str:
         for turn in session:
             if not isinstance(turn, dict):
                 continue
-            field = str(turn.get("field", "user"))
-            value = str(turn.get("value", "")).replace("\r\n", "\n").replace("\n", " ")
+            # Real LongMemEval turns are {"role","content"}; the legacy
+            # {"field","value"} shape is kept for hand-written fixtures.
+            field = str(turn.get("role") or turn.get("field", "user"))
+            value = str(turn.get("content") or turn.get("value") or "")
+            value = value.replace("\r\n", "\n").replace("\n", " ")
             lines.append(f"- {field}: {value}")
     return "\n".join(lines) + "\n"
+
+
+def evidence_turn_text(session: list) -> str:
+    """Content of the turns marked ``has_answer`` — the sharpest evidence."""
+    parts: list[str] = []
+    for turn in session if isinstance(session, list) else []:
+        if isinstance(turn, dict) and turn.get("has_answer"):
+            parts.append(str(turn.get("content") or turn.get("value") or ""))
+    return "\n".join(parts)
 
 
 def render_one_session_md(session: list, observed_epoch: float | None) -> str:
@@ -124,25 +136,30 @@ def evidence_indices(rec: dict, n_sessions: int) -> set[int]:
     return idxs or set(range(n_sessions))
 
 
-def evidence_needles(answer: str, evidence_text: str) -> list[str]:
+def evidence_needles(
+    answer: str, evidence_text: str, answer_turn_text: str = ""
+) -> list[str]:
     """Needles for retrieval recall: answer terms first, then distinctive
     evidence-session terms.
 
     LongMemEval answers are often paraphrastic — verbatim answer words verify
     rarely. When too few answer words appear literally in the evidence file,
-    fall back to the evidence session's own distinctive tokens, so the case
-    still measures 'did the evidence surface' rather than being vacuous.
+    fall back to the evidence session's own distinctive tokens (preferring
+    ``has_answer`` turn content), so the case still measures 'did the evidence
+    surface' rather than being vacuous.
     """
     needles = extract_must_include(answer, evidence_text.lower())
     if len(needles) >= 2:
         return needles[:5]
     seen = set(needles)
-    for word in content_words(evidence_text):
-        if len(word) >= 6 and word not in seen:
-            seen.add(word)
-            needles.append(word)
-            if len(needles) >= 5:
-                break
+    # Prefer distinctive tokens from has_answer turns, then the session text.
+    for source in (answer_turn_text, evidence_text):
+        for word in content_words(source):
+            if len(word) >= 6 and word not in seen:
+                seen.add(word)
+                needles.append(word)
+                if len(needles) >= 5:
+                    return needles[:5]
     return needles[:5]
 
 
@@ -252,6 +269,10 @@ def convert(
             case_type, expect_empty = map_case_type(
                 question_type if isinstance(question_type, str) else None
             )
+            # Cleaned LongMemEval marks abstention via the question_id suffix
+            # (`*_abs`) rather than a distinct question_type.
+            if not expect_empty and str(rec.get("question_id", "")).endswith("_abs"):
+                case_type, expect_empty = "unknown_query", True
 
             expected: dict = {
                 "case_type": case_type,
@@ -259,17 +280,37 @@ def convert(
                 "must_exclude": [],
                 "expect_empty": expect_empty,
                 "source_uri": f"entities/{first_evidence}",
+                # Session-level recall oracle (the LongMemEval community
+                # convention): a hit is any result whose source_uri is one of
+                # the answer-bearing sessions. Verbatim needles stay as a
+                # secondary diagnostic only.
+                "source_uris": [
+                    f"entities/{f}" for j, f, _ in session_files if j in evidence_idx
+                ],
                 "phase": 1,
             }
             note: str | None = None
             if not expect_empty:
                 answer = rec.get("answer")
+                # Strip the observed_at frontmatter so needles come from real
+                # content, not generated metadata.
                 evidence_text = "\n".join(
-                    text for j, _f, text in session_files if j in evidence_idx
+                    "\n".join(
+                        line
+                        for line in text.splitlines()
+                        if not line.startswith(("observed_at:", "---"))
+                    )
+                    for j, _f, text in session_files
+                    if j in evidence_idx
+                )
+                answer_turn_text = "\n".join(
+                    evidence_turn_text(sessions[j])
+                    for j in evidence_idx
+                    if j < len(sessions)
                 )
                 needles = (
-                    evidence_needles(str(answer), evidence_text)
-                    if isinstance(answer, str)
+                    evidence_needles(str(answer), evidence_text, answer_turn_text)
+                    if answer is not None
                     else []
                 )
                 # must_include is matched case-sensitively by the oracle against

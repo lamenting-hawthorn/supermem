@@ -56,6 +56,10 @@ class ExpectedOutcome:
     must_exclude: list[str] = field(default_factory=list)
     expect_empty: bool = False
     source_uri: str | None = None
+    # Session-level recall targets (LongMemEval convention): a hit is any
+    # result whose source_uri is in this set. When present, it is the primary
+    # oracle; must_include remains a secondary verbatim-content diagnostic.
+    source_uris: list[str] = field(default_factory=list)
     phase: int = 1
 
 
@@ -81,6 +85,7 @@ class BenchmarkCase:
             must_exclude=list(exp_raw.get("must_exclude", [])),
             expect_empty=bool(exp_raw.get("expect_empty", False)),
             source_uri=exp_raw.get("source_uri"),
+            source_uris=list(exp_raw.get("source_uris", [])),
             phase=int(exp_raw.get("phase", 1)),
         )
         tb = raw.get("temporal_bound")
