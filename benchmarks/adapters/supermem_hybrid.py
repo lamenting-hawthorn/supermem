@@ -86,11 +86,12 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             os.environ.setdefault(
                 "SUPERMEM_EMBEDDING_BASE_URL", "https://openrouter.ai/api/v1"
             )
-            # Paid route by default: the :free variant is throttled at the
-            # upstream provider regardless of OpenRouter tier (observed as
-            # connection resets mid-ingest). Override via env if needed.
+            # Paid route by default: nemotron-3-embed-1b is only served on the
+            # :free variant, which is throttled at the upstream provider
+            # regardless of OpenRouter tier (connection resets mid-ingest).
+            # qwen3-embedding-8b is a paid route — stable and ~$0.25/corpus.
             os.environ.setdefault(
-                "SUPERMEM_EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b"
+                "SUPERMEM_EMBEDDING_MODEL", "qwen/qwen3-embedding-8b"
             )
             if os.getenv("OPENROUTER_API_KEY"):
                 os.environ.setdefault(
