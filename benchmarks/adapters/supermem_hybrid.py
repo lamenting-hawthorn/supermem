@@ -96,6 +96,18 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             # input_type is a module-level config attr read at call time.
             if os.getenv("SUPERMEM_BENCH_EMBED_INPUT_TYPE") in ("1", "true"):
                 setattr(_config, "SUPERMEM_EMBEDDING_INPUT_TYPE", True)
+            # Remote embedders (nemotron-2048d) run a different cosine scale —
+            # measured hits ~0.6 vs noise ~0.94, so the bge-calibrated 0.35
+            # floor would drop every real hit. Recalibrate the documented knob.
+            floor = os.getenv("SUPERMEM_BENCH_MAX_DISTANCE")
+            if floor:
+                try:
+                    import supermem.storage.vector_sqlite as _vs_mod
+
+                    setattr(_config, "SUPERMEM_VECTOR_MAX_DISTANCE", float(floor))
+                    setattr(_vs_mod, "SUPERMEM_VECTOR_MAX_DISTANCE", float(floor))
+                except ImportError:
+                    pass
         _config.SUPERMEM_VECTORS_PATH = workspace / "vectors.db"
         try:
             self._vector = create_vector_manager()
