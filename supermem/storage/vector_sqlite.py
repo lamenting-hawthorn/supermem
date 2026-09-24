@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from supermem.config import SUPERMEM_VECTOR
+from supermem.config import SUPERMEM_VECTOR, SUPERMEM_VECTOR_MAX_DISTANCE
 from supermem.logging import get_logger
 from supermem.storage.vector_factory import (
     format_identity,
@@ -344,26 +344,44 @@ class SqliteVecManager:
                 error=str(exc),
             )
 
-    async def search(self, query: str, limit: int = 10) -> list[tuple[int, float]]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        max_distance: float | None = None,
+    ) -> list[tuple[int, float]]:
         """KNN search → ``(obs_id, cosine_distance)`` ranked best-first.
 
         One result per observation (best chunk wins). Cosine distance is
         computed via ``vec_distance_cosine`` (lower = closer), matching the
-        legacy Chroma backend's cosine space.
+        legacy Chroma backend's cosine space. Hits worse than
+        ``max_distance`` are dropped — KNN otherwise always returns top-k
+        nearest rows, even for out-of-scope queries. ``None`` reads the
+        SUPERMEM_VECTOR_MAX_DISTANCE config (0.35 default); pass
+        ``float("inf")`` to bypass the floor for a single call.
         """
         if not self.available:
             return []
         assert self._embed_fn is not None
+        cutoff = SUPERMEM_VECTOR_MAX_DISTANCE if max_distance is None else max_distance
         try:
             qvecs = await asyncio.to_thread(self._embed_fn, [query])
-            return await asyncio.to_thread(self._search_sync, qvecs[0], limit)
+            return await asyncio.to_thread(self._search_sync, qvecs[0], limit, cutoff)
         except Exception as exc:
             log.warning("sqlite_vec_search_failed", error=str(exc))
             return []
 
-    def _search_sync(self, qvec: list[float], limit: int) -> list[tuple[int, float]]:
+    def _search_sync(
+        self, qvec: list[float], limit: int, max_distance: float | None
+    ) -> list[tuple[int, float]]:
         import sqlite_vec
 
+        fetch_k = max(int(limit), 1)
+        if max_distance is not None:
+            # Over-fetch: obs-level dedup + the distance floor can still
+            # yield up to `limit` rows.
+            fetch_k = max(fetch_k * 3, 10)
         with self._lock, self._connection() as conn:
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
@@ -377,16 +395,21 @@ class SqliteVecManager:
                 (
                     sqlite_vec.serialize_float32(qvec),
                     sqlite_vec.serialize_float32(qvec),
-                    max(int(limit), 1),
+                    fetch_k,
                 ),
             ).fetchall()
         out: list[tuple[int, float]] = []
         seen: set[int] = set()
         for oid, dist in rows:
+            if max_distance is not None and float(dist) > max_distance:
+                # Rows are distance-ordered — everything after is worse.
+                break
             if oid is None or int(oid) in seen:
                 continue
             seen.add(int(oid))
             out.append((int(oid), float(dist)))
+            if len(out) >= int(limit):
+                break
         return out
 
     async def delete_by_source(self, source_uri: str) -> None:

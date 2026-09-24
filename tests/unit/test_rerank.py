@@ -1,7 +1,7 @@
 """Unit tests for the flag-gated local cross-encoder reranker.
 
 Covers: Reranker score-sort logic (injected scorer), graceful passthrough
-when sentence_transformers is unavailable, the hybrid.py RRF-path wiring
+when fastembed is unavailable, the hybrid.py RRF-path wiring
 (fake reranker reorders fused candidates, lifecycle set preserved, default
 OFF), and rerank input capping.
 """
@@ -24,16 +24,16 @@ from supermem.storage.vector import ChromaManager
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _block_sentence_transformers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``import sentence_transformers`` raise ImportError."""
+def _block_fastembed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``import fastembed`` raise ImportError."""
 
     import builtins
 
     real_import = builtins.__import__
 
     def fake_import(name: str, *args, **kwargs):
-        if name == "sentence_transformers" or name.startswith("sentence_transformers."):
-            raise ImportError("sentence_transformers disabled for test")
+        if name == "fastembed" or name.startswith("fastembed."):
+            raise ImportError("fastembed disabled for test")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -164,10 +164,10 @@ async def test_rerank_empty_candidates_returns_empty() -> None:
 # ── Unavailability / failure passthrough ─────────────────────────────────────
 
 
-def test_reranker_unavailable_without_sentence_transformers(
+def test_reranker_unavailable_without_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _block_sentence_transformers(monkeypatch)
+    _block_fastembed(monkeypatch)
     reranker = Reranker()
     assert reranker.available is False
 
@@ -176,7 +176,7 @@ def test_reranker_unavailable_without_sentence_transformers(
 async def test_rerank_passthrough_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _block_sentence_transformers(monkeypatch)
+    _block_fastembed(monkeypatch)
     reranker = Reranker()
     candidates = [
         {"id": 1, "content": "alpha"},

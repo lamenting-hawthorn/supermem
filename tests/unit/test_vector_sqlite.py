@@ -126,8 +126,9 @@ def test_no_provider_reports_unavailable(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_upsert_search_roundtrip_and_ordering(
-    enabled: None, tmp_path: Path
+    enabled: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(vector_sqlite_mod, "SUPERMEM_VECTOR_MAX_DISTANCE", None)
     db = tmp_path / "vectors.db"
     mgr = make_manager(db)
     mgr.init()
@@ -157,7 +158,43 @@ async def test_search_dedupes_obs_ids_best_chunk_wins(
 
 
 @pytest.mark.asyncio
-async def test_distance_ordering_across_sources(enabled: None, tmp_path: Path) -> None:
+async def test_search_respects_distance_floor(
+    enabled: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SUPERMEM_VECTOR_MAX_DISTANCE drops worse-than-threshold hits.
+
+    FakeEmbedder produces cosine distances of exactly 0 (matching token) or
+    1 (orthogonal), so the floor cleanly partitions the results.
+    """
+    mgr = make_manager(tmp_path / "vectors.db")
+    mgr.init()
+    await mgr.upsert_chunks(["camera"], obs_id=1, source_uri="a.md")
+    await mgr.upsert_chunks(["tokyo trip"], obs_id=2, source_uri="b.md")
+
+    # Per-call override: floor at 0.5 drops the orthogonal doc.
+    hits = await mgr.search("camera", limit=5, max_distance=0.5)
+    assert [oid for oid, _ in hits] == [1]
+
+    # Per-call bypass: floor above 1 keeps everything.
+    hits = await mgr.search("camera", limit=5, max_distance=1.5)
+    assert [oid for oid, _ in hits] == [1, 2]
+
+    # Default comes from the module config (0.35 default → drops distance-1).
+    monkeypatch.setattr(vector_sqlite_mod, "SUPERMEM_VECTOR_MAX_DISTANCE", 0.35)
+    hits = await mgr.search("camera", limit=5)
+    assert [oid for oid, _ in hits] == [1]
+
+    # Floor disabled via config → all hits returned.
+    monkeypatch.setattr(vector_sqlite_mod, "SUPERMEM_VECTOR_MAX_DISTANCE", None)
+    hits = await mgr.search("camera", limit=5)
+    assert [oid for oid, _ in hits] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_distance_ordering_across_sources(
+    enabled: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vector_sqlite_mod, "SUPERMEM_VECTOR_MAX_DISTANCE", None)
     mgr = make_manager(tmp_path / "vectors.db")
     mgr.init()
     await mgr.upsert_chunks(["tokyo"], obs_id=1, source_uri="j.md")

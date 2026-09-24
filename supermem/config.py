@@ -136,9 +136,35 @@ def vector_backend_from_env() -> str:
 
 SUPERMEM_VECTOR_BACKEND: str = vector_backend_from_env()
 
-# Directory holding the sqlite-vec store (vectors.db lives beside the main DB
-# so a single backup of ~/.supermem covers everything).
-SUPERMEM_VECTORS_PATH: Path = SUPERMEM_DB_PATH.parent / "vectors.db"
+
+# ── Vector relevance floor ──────────────────────────────────────────────────
+# SUPERMEM_VECTOR_MAX_DISTANCE: cosine-distance cutoff for the sqlite-vec
+# tier. KNN otherwise always returns top-k nearest rows — including
+# irrelevant hits for out-of-scope queries — so hits worse than this are
+# dropped. Calibrated on the frozen bench corpus for the default embedder
+# (BAAI/bge-small-en-v1.5): true hits ≲0.31, noise ≳0.36. Retune per
+# embedding model/corpus; "off"/"none" disables the floor.
+def _parse_vector_max_distance(raw: str | None) -> float | None:
+    val = (raw or "").strip().lower()
+    if val in {"off", "none", "disabled", "false"}:
+        return None
+    try:
+        return float(val) if val else 0.35
+    except ValueError:
+        return 0.35
+
+
+def vector_max_distance_from_env() -> float | None:
+    return _parse_vector_max_distance(os.getenv("SUPERMEM_VECTOR_MAX_DISTANCE"))
+
+
+SUPERMEM_VECTOR_MAX_DISTANCE: float | None = vector_max_distance_from_env()
+
+# Path of the sqlite-vec store (default: vectors.db beside the main DB so a
+# single backup of ~/.supermem covers everything).
+SUPERMEM_VECTORS_PATH: Path = Path(
+    os.getenv("SUPERMEM_VECTORS_PATH", str(SUPERMEM_DB_PATH.parent / "vectors.db"))
+)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 

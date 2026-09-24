@@ -4,12 +4,14 @@ Gated behind ``SUPERMEM_RERANKER=1``/``true`` (default OFF). When enabled,
 a local cross-encoder re-ranks the top fused RRF candidates by
 query-document relevance. Model name is configurable via
 ``SUPERMEM_RERANK_MODEL`` and defaults to
-``cross-encoder/ms-marco-MiniLM-L-6-v2`` (~90MB).
+``Xenova/ms-marco-MiniLM-L-6-v2`` (~80MB ONNX).
 
-The ``sentence_transformers`` package is intentionally NOT a declared
-dependency (it is heavy); it is imported lazily and guarded in
-try/except. If it is missing, or the model fails to load, ``available``
-is False and ``rerank()`` is a no-op passthrough that never raises.
+Backed by ``fastembed``'s ``TextCrossEncoder`` — a declared dependency, so
+the reranker works on a standard install without the heavyweight
+sentence-transformers/torch stack. The model is still loaded lazily and
+guarded in try/except: if fastembed is missing or the model fails to load,
+``available`` is False and ``rerank()`` is a no-op passthrough that never
+raises.
 
 Apache 2.0 — original implementation.
 """
@@ -26,7 +28,7 @@ from supermem.logging import get_logger
 log = get_logger(__name__)
 
 SUPERMEM_RERANK_MODEL: str = os.getenv(
-    "SUPERMEM_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    "SUPERMEM_RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2"
 )
 """Cross-encoder model name used by the singleton reranker."""
 
@@ -48,12 +50,12 @@ Scorer = Callable[[Sequence[tuple[str, str]]], Sequence[float]]
 class Reranker:
     """Local cross-encoder reranker.
 
-    Wraps a ``sentence_transformers.CrossEncoder`` loaded lazily on first
-    use. All model work runs in a worker thread via ``asyncio.to_thread``
-    so the event loop is never blocked.
+    Wraps a ``fastembed.rerank.cross_encoder.TextCrossEncoder`` loaded
+    lazily on first use. All model work runs in a worker thread via
+    ``asyncio.to_thread`` so the event loop is never blocked.
 
     Args:
-        model_name: HuggingFace cross-encoder model id. Defaults to
+        model_name: fastembed cross-encoder model id. Defaults to
             ``SUPERMEM_RERANK_MODEL``.
         scorer: Optional scoring function used instead of the model. Tests
             inject a deterministic stub here to unit-test ranking logic.
@@ -76,7 +78,7 @@ class Reranker:
         if self._model is not None:
             return True
         try:
-            import sentence_transformers  # noqa: F401
+            import fastembed  # noqa: F401
         except Exception:
             return False
         try:
@@ -105,8 +107,8 @@ class Reranker:
         if not self.available:
             return candidates
         try:
-            pairs = [(query, self._content(c)) for c in candidates]
-            scores = await asyncio.to_thread(self._predict, pairs)
+            documents = [self._content(c) for c in candidates]
+            scores = await asyncio.to_thread(self._predict, query, documents)
         except Exception as exc:
             log.warning("rerank_failed", error=str(exc), candidates=len(candidates))
             return candidates
@@ -125,19 +127,19 @@ class Reranker:
 
     # ── Private ───────────────────────────────────────────────────────────────
 
-    def _predict(self, pairs: Sequence[tuple[str, str]]) -> Sequence[float]:
+    def _predict(self, query: str, documents: Sequence[str]) -> Sequence[float]:
         if self._scorer is not None:
-            return self._scorer(pairs)
+            return self._scorer([(query, doc) for doc in documents])
         if self._model is None:
             self._ensure_model()
         assert self._model is not None
-        return self._model.predict(pairs)
+        return list(self._model.rerank(query, list(documents)))
 
     def _ensure_model(self) -> None:
         if self._model is None:
-            from sentence_transformers import CrossEncoder
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-            self._model = CrossEncoder(self._model_name)
+            self._model = TextCrossEncoder(model_name=self._model_name)
 
     @staticmethod
     def _content(candidate: Any) -> str:

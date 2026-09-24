@@ -1,17 +1,25 @@
-"""supermem_hybrid adapter — FTS + vector (Chroma) retrieval, experimental.
+"""supermem_hybrid adapter — lifecycle-aware hybrid retrieval (RRF fusion).
 
-Skips cleanly when chromadb is unavailable in the environment.
+Exercises the real product path: ``create_vector_manager()`` (auto-select:
+sqlite-vec → chroma → unavailable) feeding ``HybridRetriever``'s RRF fusion
+with post-fusion lifecycle filtering. Skips cleanly when no vector backend
+or embedding provider is available.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
+from typing import Any
 
-from supermem.logging import get_logger
-from supermem.storage.database import DatabaseManager
-from supermem.storage.vector import ChromaManager
+import supermem.config as _config
+import supermem.storage.vector as _vector_mod
 from supermem.indexer.vault import VaultIndexer
+from supermem.logging import get_logger
+from supermem.retrieval.hybrid import HybridRetriever
+from supermem.storage.database import DatabaseManager
+from supermem.storage.vector import create_vector_manager
 
 from benchmarks.adapters.supermem_fts import SupermemFtsAdapter
 from benchmarks.harness_types import CitedResult
@@ -24,23 +32,36 @@ class AdapterUnavailable(RuntimeError):
 
 
 class SupermemHybridAdapter(SupermemFtsAdapter):
-    """FTS pipeline plus Chroma vector chunks merged into one ranking.
-
-    Marked experimental per handoff 06 until vector/graph projections have
-    populated-store update/delete coverage.
-    """
+    """FTS + vector hybrid pipeline via the production RRF fusion path."""
 
     name = "supermem_hybrid"
 
     def __init__(self) -> None:
         super().__init__()
-        self._vector: ChromaManager | None = None
+        self._vector: Any | None = None
+        self._hybrid: HybridRetriever | None = None
 
     async def setup(self, workspace: Path, dataset_dir: Path) -> None:
+        # Enable the vector tier inside this benchmark process. SUPERMEM_VECTOR
+        # is a per-module global bound at import, so patch each manager module
+        # (same convention the unit tests use).
+        os.environ["SUPERMEM_VECTOR"] = "true"
+        setattr(_config, "SUPERMEM_VECTOR", True)
+        setattr(_vector_mod, "SUPERMEM_VECTOR", True)
         try:
-            self._vector = ChromaManager(workspace / "chroma")
+            import supermem.storage.vector_sqlite as _vector_sqlite_mod
+
+            setattr(_vector_sqlite_mod, "SUPERMEM_VECTOR", True)
+        except ImportError:
+            pass
+        _config.SUPERMEM_VECTORS_PATH = workspace / "vectors.db"
+        try:
+            self._vector = create_vector_manager()
         except Exception as exc:
-            raise AdapterUnavailable(f"chroma unavailable: {exc}") from exc
+            raise AdapterUnavailable(f"vector backend unavailable: {exc}") from exc
+        self._vector.init()
+        if not getattr(self._vector, "available", False):
+            raise AdapterUnavailable("vector backend reports unavailable")
         # Parent setup builds db + graph + indexer with vector=None; rebuild the
         # indexer with our vector manager before walking.
         await super().setup(workspace, dataset_dir)
@@ -52,27 +73,32 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
             self._db, graph, vector=self._vector, vault_path=workspace
         )
         await self._indexer.walk()
+        # GraphRetriever dereferences .available, so it needs a manager object,
+        # never None — an un-initialised manager simply reports unavailable.
+        from supermem.storage.graph import KuzuGraphManager
+
+        self._hybrid = HybridRetriever(
+            db=self._db,
+            graph=(
+                self._graph
+                if self._graph is not None
+                else KuzuGraphManager(workspace / "graph-unused" / "g.kz")
+            ),
+            chroma=self._vector,
+        )
 
     async def retrieve(self, query: str, k: int = 10) -> list[CitedResult]:
-        assert self._db is not None and self._workspace is not None
+        assert (
+            self._db is not None
+            and self._workspace is not None
+            and self._hybrid is not None
+        )
         started = time.perf_counter()
-        fts_ids = await self._db.fts_search(query, limit=k)
-        vec_hits: list[tuple[int, float]] = []
-        if self._vector is not None and self._vector.available:
-            try:
-                vec_hits = await self._vector.search(query, limit=k)
-            except Exception as exc:
-                log.warning("bench_vector_search_failed", error=str(exc))
-        # Merge: FTS rank first (reciprocal-rank fusion), then vector hits not
-        # already present.
-        fused_ids: list[int] = list(fts_ids)
-        for obs_id, _distance in vec_hits:
-            if obs_id not in fused_ids:
-                fused_ids.append(obs_id)
-        fused_ids = fused_ids[:k]
+        result = await self._hybrid.search(query, tier_limit=3, limit=k)
+        fused_ids = result.obs_ids[:k]
+        latency_ms = (time.perf_counter() - started) * 1000.0
         rows = await self._db.get_observations(fused_ids)
         by_id = {row["id"]: row for row in rows}
-        latency_ms = (time.perf_counter() - started) * 1000.0
         results: list[CitedResult] = []
         for rank, oid in enumerate(fused_ids, start=1):
             row = by_id.get(oid)
@@ -102,6 +128,7 @@ class SupermemHybridAdapter(SupermemFtsAdapter):
     async def teardown(self) -> None:
         await super().teardown()
         self._vector = None
+        self._hybrid = None
 
 
 def hashlib_sha256(path: Path) -> str:
