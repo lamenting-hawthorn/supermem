@@ -103,9 +103,66 @@ def render_session_md(sessions: list, observed_epoch: float | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_one_session_md(session: list, observed_epoch: float | None) -> str:
+    """Render a single haystack session as its own source file.
+
+    One file per session keeps sources small enough to be fully indexed and
+    retrieved (vault observations truncate at 4096 chars), and lets the case
+    point its citation at the evidence session specifically.
+    """
+    return render_session_md([session], observed_epoch)
+
+
+def evidence_indices(rec: dict, n_sessions: int) -> set[int]:
+    """Indices of the haystack sessions that contain the answer evidence."""
+    ans_ids = rec.get("answer_session_ids")
+    hs_ids = rec.get("haystack_session_ids")
+    if not isinstance(ans_ids, list) or not isinstance(hs_ids, list):
+        return set(range(n_sessions))
+    wanted = {str(a) for a in ans_ids}
+    idxs = {i for i, sid in enumerate(hs_ids) if str(sid) in wanted}
+    return idxs or set(range(n_sessions))
+
+
+def evidence_needles(answer: str, evidence_text: str) -> list[str]:
+    """Needles for retrieval recall: answer terms first, then distinctive
+    evidence-session terms.
+
+    LongMemEval answers are often paraphrastic — verbatim answer words verify
+    rarely. When too few answer words appear literally in the evidence file,
+    fall back to the evidence session's own distinctive tokens, so the case
+    still measures 'did the evidence surface' rather than being vacuous.
+    """
+    needles = extract_must_include(answer, evidence_text.lower())
+    if len(needles) >= 2:
+        return needles[:5]
+    seen = set(needles)
+    for word in content_words(evidence_text):
+        if len(word) >= 6 and word not in seen:
+            seen.add(word)
+            needles.append(word)
+            if len(needles) >= 5:
+                break
+    return needles[:5]
+
+
+def haystack_epoch(rec: dict) -> float | None:
+    """Latest haystack timestamp: `haystack_date` (scalar) or the max of
+    `haystack_dates` (cleaned format's list)."""
+    epoch = parse_epoch(rec.get("haystack_date"))
+    if epoch is not None:
+        return epoch
+    dates = rec.get("haystack_dates")
+    if isinstance(dates, list) and dates:
+        epochs = [e for e in (parse_epoch(d) for d in dates) if e is not None]
+        if epochs:
+            return max(epochs)
+    return None
+
+
 def map_case_type(question_type: str | None) -> tuple[str, bool]:
     """Returns (case_type, expect_empty)."""
-    qt = question_type or ""
+    qt = (question_type or "").replace("-", "_")
     if qt == "abstention":
         return "unknown_query", True
     if qt == "temporal_reasoning":
@@ -168,12 +225,29 @@ def convert(
             if not isinstance(sessions, list):
                 sessions = []
 
-            observed_epoch = parse_epoch(rec.get("haystack_date"))
+            observed_epoch = haystack_epoch(rec)
             if observed_epoch is None:
                 observed_epoch = parse_epoch(rec.get("question_date"))
 
-            md_text = render_session_md(sessions, observed_epoch)
-            (sources_dir / f"session-{idx}.md").write_text(md_text, encoding="utf-8")
+            # One source file per haystack session — fat per-record files get
+            # truncated at the observation layer (4096 chars) which makes the
+            # recall check vacuous and destroys per-session citation fidelity.
+            evidence_idx = evidence_indices(rec, len(sessions))
+            session_files: list[tuple[int, str, str]] = []
+            for j, session in enumerate(sessions):
+                text = render_one_session_md(session, observed_epoch)
+                fname = f"session-{idx}-s{j}.md"
+                (sources_dir / fname).write_text(text, encoding="utf-8")
+                session_files.append((j, fname, text))
+            if not session_files:
+                text = render_one_session_md([], observed_epoch)
+                fname = f"session-{idx}-s0.md"
+                (sources_dir / fname).write_text(text, encoding="utf-8")
+                session_files.append((0, fname, text))
+            first_evidence = next(
+                (f for j, f, _ in session_files if j in evidence_idx),
+                session_files[0][1],
+            )
 
             case_type, expect_empty = map_case_type(
                 question_type if isinstance(question_type, str) else None
@@ -184,33 +258,23 @@ def convert(
                 "must_include": [],
                 "must_exclude": [],
                 "expect_empty": expect_empty,
-                "source_uri": f"entities/session-{idx}.md",
+                "source_uri": f"entities/{first_evidence}",
                 "phase": 1,
             }
             note: str | None = None
             if not expect_empty:
                 answer = rec.get("answer")
-                haystack_text = "\n".join(
-                    line
-                    for line in md_text.splitlines()
-                    if not line.startswith("observed_at:")
+                evidence_text = "\n".join(
+                    text for j, _f, text in session_files if j in evidence_idx
                 )
                 needles = (
-                    extract_must_include(str(answer), haystack_text.lower())
+                    evidence_needles(str(answer), evidence_text)
                     if isinstance(answer, str)
                     else []
                 )
                 # must_include is matched case-sensitively by the oracle against
-                # indexed observation content; verify literal presence in the file.
-                file_text = (sources_dir / f"session-{idx}.md").read_text(
-                    encoding="utf-8"
-                )
-                needles = [
-                    n
-                    for n in needles
-                    if n in file_text
-                    or any(n in w for w in _TOKEN_RE.findall(file_text))
-                ]
+                # indexed observation content; verify literal presence in files.
+                file_text = "\n".join(t for _j, _f, t in session_files)
                 verified: list[str] = []
                 for needle in needles:
                     if needle in file_text:
@@ -227,8 +291,8 @@ def convert(
                 expected["note"] = note
 
             temporal_bound = None
-            if question_type == "temporal_reasoning":
-                as_of = parse_epoch(rec.get("haystack_date"))
+            if (question_type or "").replace("-", "_") == "temporal_reasoning":
+                as_of = haystack_epoch(rec)
                 temporal_bound = {"as_of": as_of} if as_of is not None else None
 
             case = {

@@ -1,0 +1,7 @@
+{
+  "name": "paraphrase-local",
+  "version": "1.0",
+  "description": "Paraphrase-recall probe: each positive case queries a fact whose source states it in disjoint vocabulary, so lexical retrieval cannot match and the FTS-vs-hybrid delta measures semantic recall. Two expect_empty cases check abstention under semantic search (distance floor). No mutations; phase 1 only.",
+  "mutations": [],
+  "n_cases": 10
+}
