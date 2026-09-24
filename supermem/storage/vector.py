@@ -89,9 +89,14 @@ class ChromaManager:
         self._chroma = _import_chroma()
         self._client: Any = None
         self._collection: Any = None
-        self._active_identity, self._embed_fn = resolve_embedder(
-            embedding_provider_from_env(), embedding_model_from_env()
-        )
+        if SUPERMEM_VECTOR:
+            self._active_identity, self._embed_fn = resolve_embedder(
+                embedding_provider_from_env(), embedding_model_from_env()
+            )
+        else:
+            # Tier disabled: skip embedder resolution so construction never
+            # triggers provider I/O or a local model download.
+            self._active_identity, self._embed_fn = {}, None
 
     def init(self) -> None:
         if not self._chroma:

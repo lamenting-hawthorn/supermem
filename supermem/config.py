@@ -73,11 +73,11 @@ SUPERMEM_CHROMA_PATH: Path = Path(
 )
 
 # ── Embedding (tier 3 vector store) ──────────────────────────────────────────
-# SUPERMEM_EMBEDDING_PROVIDER: "" → backend default (Chroma built-in ONNX MiniLM
-#   for the legacy chroma backend; NO provider for the sqlite backend, which
-#   therefore degrades to unavailable);
-# "fastembed" → use fastembed's TextEmbedding when the package is installed
-#   (optional extra — NOT a hard dependency);
+# SUPERMEM_EMBEDDING_PROVIDER: "" → auto: fastembed when importable (declared
+#   dependency; the default embedder for the sqlite-vec backend), else Chroma's
+#   built-in ONNX MiniLM for the legacy chroma backend, else unavailable;
+# "fastembed" → require fastembed's TextEmbedding (bge-small-en-v1.5 default;
+#   a missing/failing install reports unavailable rather than falling back);
 # "local-endpoint" → POST to an OpenAI-compatible /embeddings endpoint
 #   (LM Studio / Ollama serve bge/nomic-embed models) configured via
 #   SUPERMEM_EMBEDDING_BASE_URL + SUPERMEM_EMBEDDING_MODEL.

@@ -31,6 +31,8 @@ dependencies = [
     "watchdog>=6.0.0",
     # sqlite-vec: loadable SQLite extension powering the default vector tier
     "sqlite-vec>=0.1.6",
+    # fastembed: local ONNX embedder — default provider for the sqlite-vec tier
+    "fastembed>=0.7.3",
 
     # ── MCP server ────────────────────────────────────────────────────────────
     "fastmcp",

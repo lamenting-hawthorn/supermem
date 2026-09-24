@@ -69,10 +69,11 @@ class VectorDimMismatchError(ValueError):
 class SqliteVecManager:
     """Optional sqlite-vec vector store; same public surface as ChromaManager.
 
-    Disabled by default (SUPERMEM_VECTOR=false). Additionally requires an
-    embedding provider: unlike Chroma there is no built-in embedder, so with
-    no fastembed install and no local-endpoint configured the manager reports
-    available=False.
+    Disabled by default (SUPERMEM_VECTOR=false); while disabled the embedder
+    is never resolved, so construction performs no provider I/O or model
+    load/download. Additionally requires an embedding provider: unlike Chroma
+    there is no built-in embedder, so with no fastembed install and no
+    local-endpoint configured the manager reports available=False.
     """
 
     def __init__(
@@ -88,8 +89,12 @@ class SqliteVecManager:
             identity, fn = embedder
             self._active_identity: dict[str, Any] | None = dict(identity)
             self._embed_fn: Callable[[Any], list[list[float]]] | None = fn
-        else:
+        elif SUPERMEM_VECTOR:
             self._active_identity, self._embed_fn = get_embedder() or (None, None)
+        else:
+            # Tier disabled: skip embedder resolution entirely so construction
+            # never triggers provider I/O or a local model download.
+            self._active_identity, self._embed_fn = None, None
         self._ext_path: str | None = None
         self._initialized = False
         self._stored_identity: dict[str, Any] | None = None
@@ -142,8 +147,10 @@ class SqliteVecManager:
                     else None
                 ),
             )
-            if self._stored_identity is not None and not identity_matches(
-                self._stored_identity, self.active_identity
+            if (
+                SUPERMEM_VECTOR
+                and self._stored_identity is not None
+                and not identity_matches(self._stored_identity, self.active_identity)
             ):
                 log.warning(
                     "embedding_identity_mismatch",

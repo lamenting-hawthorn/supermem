@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -73,8 +74,15 @@ def test_embedding_matches() -> None:
 
 def test_default_identity_shape() -> None:
     identity, embed_fn = resolve_embedder("", "")
-    assert identity == {"provider": "chroma-default-onnx-minilm"}
-    assert embed_fn is None
+    if HAS_FASTEMBED:
+        # "" (auto) resolves to fastembed when the package is installed.
+        assert identity["provider"] == "fastembed"
+        assert identity["model"] == DEFAULT_FASTEMBED_MODEL
+        assert isinstance(identity.get("dim"), int)
+        assert embed_fn is not None
+    else:
+        assert identity == {"provider": "chroma-default-onnx-minilm"}
+        assert embed_fn is None
 
 
 # ── Fastembed fallback (skipped when fastembed IS installed) ─────────────────
@@ -234,6 +242,7 @@ def test_env_accessors_read_live_environment(monkeypatch: pytest.MonkeyPatch) ->
 def test_manager_resolves_identity_at_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(vector_mod, "SUPERMEM_VECTOR", True)
     monkeypatch.setenv("SUPERMEM_EMBEDDING_PROVIDER", "fastembed")
     monkeypatch.setenv("SUPERMEM_EMBEDDING_MODEL", DEFAULT_FASTEMBED_MODEL)
     mgr = ChromaManager()
@@ -244,6 +253,25 @@ def test_manager_resolves_identity_at_construction(
         assert mgr.active_identity == {"provider": "chroma-default-onnx-minilm"}
     # No collection open → embedding_identity reports resolved active identity.
     assert mgr.embedding_identity() == mgr.active_identity
+
+
+def test_disabled_flag_never_resolves_embedder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Flag off → construction skips embedder resolution entirely.
+
+    Resolving an embedder can trigger a local model download; that must not
+    happen on the server startup path when the tier is disabled.
+    """
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("resolve_embedder called while vector tier disabled")
+
+    monkeypatch.setattr(vector_mod, "SUPERMEM_VECTOR", False)
+    monkeypatch.setattr(vector_mod, "resolve_embedder", _boom)
+    mgr = ChromaManager(db_path=tmp_path / "chroma")
+    mgr.init()
+    assert mgr.active_identity == {}
 
 
 # ── Chroma-backed tests (skip when chromadb unavailable) ─────────────────────

@@ -88,6 +88,26 @@ def test_unavailable_without_flag(tmp_path: Path) -> None:
     assert mgr.active_identity["provider"] == "fake"
 
 
+def test_disabled_flag_never_resolves_embedder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Flag off → construction skips get_embedder entirely.
+
+    Resolving an embedder can trigger a local model download; that must not
+    happen on the server startup path when the tier is disabled.
+    """
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("get_embedder called while vector tier disabled")
+
+    monkeypatch.setattr(vector_sqlite_mod, "SUPERMEM_VECTOR", False)
+    monkeypatch.setattr(vector_sqlite_mod, "get_embedder", _boom)
+    mgr = SqliteVecManager(db_path=tmp_path / "vectors.db")
+    mgr.init()
+    assert mgr.available is False
+    assert mgr.active_identity == {}
+
+
 @pytest.mark.skipif(
     HAS_FASTEMBED, reason="fastembed installed; default-provider path differs"
 )
