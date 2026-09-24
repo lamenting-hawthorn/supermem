@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -148,11 +149,23 @@ class LocalEndpointEmbeddingFunction:
             # input_type=query|passage; extra_body forwards it through the
             # OpenAI-compatible envelope.
             kwargs["extra_body"] = {"input_type": input_type}
-        resp = self._ensure_client().embeddings.create(**kwargs)
-        vecs = [[float(x) for x in item.embedding] for item in resp.data]
-        if vecs and self.dim is None:
-            self.dim = len(vecs[0])
-        return vecs
+        # Remote endpoints throttle (429) and blip (5xx) — bounded retry so a
+        # long indexing pass isn't killed by one rate-limit window.
+        for attempt in range(4):
+            try:
+                resp = self._ensure_client().embeddings.create(**kwargs)
+                vecs = [[float(x) for x in item.embedding] for item in resp.data]
+                if vecs and self.dim is None:
+                    self.dim = len(vecs[0])
+                return vecs
+            except Exception as exc:  # openai raises APIStatusError subclasses
+                status = getattr(exc, "status_code", 0)
+                if status and status not in (429,) and status < 500:
+                    raise  # non-throttle 4xx: fail fast
+                if attempt == 3:
+                    raise
+                time.sleep(min(2**attempt * 2, 20))
+        raise RuntimeError("unreachable")
 
     def __call__(self, input: Any) -> list[list[float]]:  # noqa: A002
         from supermem.config import SUPERMEM_EMBEDDING_INPUT_TYPE
