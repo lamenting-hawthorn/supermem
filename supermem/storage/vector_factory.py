@@ -133,17 +133,41 @@ class LocalEndpointEmbeddingFunction:
 
             self._client = OpenAI(
                 base_url=self._base_url,
-                api_key=os.getenv("OPENAI_API_KEY", "local-not-required"),
+                api_key=(
+                    os.getenv("SUPERMEM_EMBEDDING_API_KEY")
+                    or os.getenv("OPENAI_API_KEY")
+                    or "local-not-required"
+                ),
             )
         return self._client
 
-    def __call__(self, input: Any) -> list[list[float]]:  # noqa: A002
-        docs = [str(d) for d in input]
-        resp = self._ensure_client().embeddings.create(model=self._model, input=docs)
+    def _embed(self, texts: list[str], input_type: str | None) -> list[list[float]]:
+        kwargs: dict[str, Any] = {"model": self._model, "input": texts}
+        if input_type is not None:
+            # NIM-style asymmetric embedders (Nemotron etc.) take
+            # input_type=query|passage; extra_body forwards it through the
+            # OpenAI-compatible envelope.
+            kwargs["extra_body"] = {"input_type": input_type}
+        resp = self._ensure_client().embeddings.create(**kwargs)
         vecs = [[float(x) for x in item.embedding] for item in resp.data]
         if vecs and self.dim is None:
             self.dim = len(vecs[0])
         return vecs
+
+    def __call__(self, input: Any) -> list[list[float]]:  # noqa: A002
+        from supermem.config import SUPERMEM_EMBEDDING_INPUT_TYPE
+
+        docs = [str(d) for d in input]
+        return self._embed(docs, "passage" if SUPERMEM_EMBEDDING_INPUT_TYPE else None)
+
+    def query_embed(self, input: Any) -> list[list[float]]:  # noqa: A002
+        """Query-side embedding — passes ``input_type="query"`` when the
+        provider advertises asymmetric modes (SUPERMEM_EMBEDDING_INPUT_TYPE=1).
+        Symmetric endpoints get identical output to ``__call__``."""
+        from supermem.config import SUPERMEM_EMBEDDING_INPUT_TYPE
+
+        queries = [str(q) for q in input]
+        return self._embed(queries, "query" if SUPERMEM_EMBEDDING_INPUT_TYPE else None)
 
 
 def probe_embedding_dim(model: Any) -> int | None:

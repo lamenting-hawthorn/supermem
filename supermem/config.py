@@ -117,6 +117,17 @@ SUPERMEM_EMBEDDING_MODEL: str = embedding_model_from_env()
 SUPERMEM_EMBEDDING_BASE_URL: str = (
     embedding_base_url_from_env() or DEFAULT_LOCAL_ENDPOINT_BASE_URL
 )
+# Optional API key for the local-endpoint provider (OpenRouter, hosted NIM,
+# etc.). Falls back to OPENAI_API_KEY at call time when unset.
+SUPERMEM_EMBEDDING_API_KEY: str = os.getenv("SUPERMEM_EMBEDDING_API_KEY") or ""
+# Asymmetric-retrieval providers (NVIDIA NIM, Voyage) require an
+# input_type="query"|"passage" hint for full retrieval accuracy — the model
+# applies a different encoding path per side. Set SUPERMEM_EMBEDDING_INPUT_TYPE=1
+# when the configured endpoint supports it; off by default since generic
+# OpenAI-compatible endpoints reject unknown fields.
+SUPERMEM_EMBEDDING_INPUT_TYPE: bool = os.getenv(
+    "SUPERMEM_EMBEDDING_INPUT_TYPE", ""
+).strip().lower() in ("1", "true")
 
 # ── Vector backend ────────────────────────────────────────────────────────────
 # SUPERMEM_VECTOR_BACKEND: "" → auto-select (sqlite backend when sqlite-vec is
