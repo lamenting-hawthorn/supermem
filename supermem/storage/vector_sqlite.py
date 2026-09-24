@@ -367,24 +367,39 @@ class SqliteVecManager:
             spans.append((start, len(flat), obs_id, source_uri))
         if not flat:
             return
-        try:
-            vectors: list[list[float]] = []
-            for i in range(0, len(flat), 64):
-                vectors.extend(
-                    await asyncio.to_thread(self._embed_fn, flat[i : i + 64])
+        # Per-sub-batch failure isolation: a transient embed error (rate limit,
+        # connection reset) drops only that batch's chunks — a single failure
+        # must not discard the entire ingest.
+        vectors: list[list[float] | None] = [None] * len(flat)
+        for i in range(0, len(flat), 64):
+            try:
+                batch = await asyncio.to_thread(self._embed_fn, flat[i : i + 64])
+                vectors[i : i + 64] = batch
+            except VectorDimMismatchError:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "sqlite_vec_embed_batch_failed", batch=i // 64, error=str(exc)
                 )
-            for start, end, obs_id, source_uri in spans:
+        n_failed = sum(1 for v in vectors if v is None)
+        if n_failed:
+            log.warning("sqlite_vec_embed_partial", dropped=n_failed, total=len(flat))
+        for start, end, obs_id, source_uri in spans:
+            sub = vectors[start:end]
+            if not sub or any(v is None for v in sub):
+                continue  # span touched a failed batch — skip, don't write
+            try:
                 await asyncio.to_thread(
                     self._write_sync,
                     flat[start:end],
-                    vectors[start:end],
+                    [v for v in sub if v is not None],
                     obs_id,
                     source_uri,
                 )
-        except VectorDimMismatchError:
-            raise
-        except Exception as exc:
-            log.warning("sqlite_vec_upsert_many_failed", error=str(exc))
+            except VectorDimMismatchError:
+                raise
+            except Exception as exc:
+                log.warning("sqlite_vec_upsert_many_failed", error=str(exc))
 
     async def search(
         self,
