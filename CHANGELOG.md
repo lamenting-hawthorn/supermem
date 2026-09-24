@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-24
+
 ### Added
+- sqlite-vec vector backend as the default Tier-3 store (pluggable embedding providers: fastembed default, local OpenAI-compatible endpoints; chromadb demoted to optional `vector` extra).
+- Flag-gated local cross-encoder reranker (`SUPERMEM_RERANKER`) over the top-50 fused candidates, backed by fastembed TextCrossEncoder.
+- `SUPERMEM_VECTOR_MAX_DISTANCE` cosine-distance floor (default 0.35) so out-of-scope queries don't return nearest-neighbour noise.
+- Digest-verifiable citations on `supermem_hybrid` via MCP `structuredContent`, plus a `verify_citation` tool that recomputes content/source digests.
+- `MemoryCompressor.compress_to_budget`: bounded summaries that may archive sources only after a salient-term coverage gate and a pre-archive retrievability proof.
+- Benchmark receipts now record injected-context accounting (chars + ~4-chars/token estimates, tokens per recall) and a context-rot probe (recall by context-size tercile).
 - Observation provenance/lifecycle metadata, retraction audit storage, and active/retracted filtering across retrieval, timelines, and recent-session context.
 - Local insight tools for open-task extraction, follow-up suggestions, and day summaries, exposed through MCP and the worker HTTP API.
 - Worker endpoints for protected-resource metadata, local insights, and observation retraction.
@@ -19,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stateless repeated initialization, and SIGTERM lifecycle cleanup.
 
 ### Changed
+- Hybrid retrieval fuses FTS and vector rankings concurrently via RRF (k=60) with graph expansion appended; lifecycle filtering runs after fusion.
+- `supermem_hybrid` bench adapter exercises the production path (create_vector_manager + HybridRetriever) instead of hard-coded chroma.
 - Hybrid retrieval now filters candidate IDs through lifecycle status before returning results.
 - MCP rate limiting is keyed by client identity across tools rather than per tool.
 - CI release jobs validate Docker/package builds on pull requests while pushing/publishing only on version tags.
